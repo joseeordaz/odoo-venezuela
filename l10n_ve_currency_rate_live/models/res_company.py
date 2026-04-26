@@ -13,7 +13,7 @@ class ResCompany(models.Model):
     _inherit = "res.company"
 
     currency_provider = fields.Selection(
-        selection_add=[("bcv", "Venezuelan Central Bank")]
+        selection=[("manual", "Manual"), ("bcv", "Venezuelan Central Bank")], default="manual"
     )
 
     can_update_habil_days = fields.Boolean(default=True)

@@ -6,7 +6,7 @@
     "website": "https://binauraldev.com/",
     "category": "Technical",
     "version": "1.3",
-    "depends": ["l10n_ve_rate", "currency_rate_live"],
+    "depends": ["l10n_ve_rate", ],
     "data": [
         "views/res_config_settings.xml",
     ],
