@@ -165,7 +165,7 @@
         <menuitem
             id="menu_retention_line_report"
             action="action_retention_line_report"
-            parent="account.account_reports_management_menu"
+            parent="account.menu_finance_reports"
         />
 
         <menuitem
