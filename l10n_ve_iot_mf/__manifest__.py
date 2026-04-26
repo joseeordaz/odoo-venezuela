@@ -12,7 +12,7 @@
     "author": "binaural-dev",
     "website": "https://binauraldev.com",
     "depends": [
-        "iot",
+        "iot_base",
         "account",
         "web",
         "l10n_ve_invoice",
