@@ -45,4 +45,4 @@ def set_main_company_currency_to_vef(env):
     company = env.ref("base.main_company", raise_if_not_found=False)
     vef = env.ref("base.VEF", raise_if_not_found=False)
     if company and vef:
-        company.currency_id = vef.id
+        pass  # patched: VEF deprecated, currency set via XML-RPC
