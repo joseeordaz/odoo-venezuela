@@ -7,19 +7,16 @@
     "author": "binaural-dev",
     "website": "https://binauraldev.com/",
     "category": "Accounting/Localizations/Account Chart",
-    "version": "19.0.1.0.0",
+    "version": "19.0.1.0.8",
     "depends": [
         "base",
         "web",
         "account",
-        "account_reports",
         "purchase",
         "sale",
         "l10n_ve_base",
         "l10n_ve_rate",
         "l10n_ve_contact",
-        "account_invoice_pricelist",
-        "account_invoice_pricelist_sale"
     ],
     "data": [
         "security/res_groups.xml",

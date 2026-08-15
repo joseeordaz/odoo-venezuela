@@ -193,24 +193,53 @@ class SaleOrder(models.Model):
                 move.foreign_taxable_income = move.tax_totals["base_amount_foreign_currency"]
 
     @api.depends("tax_totals")
+    @api.depends("tax_totals", "currency_id", "date_order", "amount_total")
     def _compute_foreign_total_billed(self):
         """
         Compute the foreign total billed of the order
         """
-        for move in self:
-            move.foreign_total_billed = False
-            if move.order_line:
-                move.foreign_total_billed = move.tax_totals.get("total_amount_foreign_currency",0)
+        for order in self:
+            order.foreign_total_billed = False
+            if not order.order_line or not order.tax_totals:
+                continue
+            fc = order.company_id.foreign_currency_id
+            if (
+                order.currency_id
+                and order.currency_id != order.company_id.currency_id
+                and order.currency_id != fc
+            ):
+                order.foreign_total_billed = order.currency_id._convert(
+                    order.amount_total,
+                    fc,
+                    order.company_id,
+                    order.date_order or fields.Date.today(),
+                )
+            else:
+                order.foreign_total_billed = order.tax_totals.get("total_amount_foreign_currency", 0)
 
-    @api.depends("tax_totals")
+    @api.depends("tax_totals", "currency_id", "date_order", "amount_untaxed")
     def _compute_foreign_untaxed_total(self):
         """
         Compute the foreign untaxed total of the order
         """
-        for move in self:
-            move.foreign_untaxed_total = False
-            if move.order_line:
-                move.foreign_untaxed_total = move.tax_totals.get("base_amount_foreign_currency",0)
+        for order in self:
+            order.foreign_untaxed_total = False
+            if not order.order_line or not order.tax_totals:
+                continue
+            fc = order.company_id.foreign_currency_id
+            if (
+                order.currency_id
+                and order.currency_id != order.company_id.currency_id
+                and order.currency_id != fc
+            ):
+                order.foreign_untaxed_total = order.currency_id._convert(
+                    order.amount_untaxed,
+                    fc,
+                    order.company_id,
+                    order.date_order or fields.Date.today(),
+                )
+            else:
+                order.foreign_untaxed_total = order.tax_totals.get("base_amount_foreign_currency", 0)
 
     @api.model
     def get_view(self, view_id=None, view_type="form", **options):
@@ -613,7 +642,7 @@ class SaleOrder(models.Model):
         for sale in self:
             picking = sale.picking_ids
             if product_limit > 0:
-                picking_moves = picking.move_ids_without_package
+                picking_moves = picking.move_ids
                 picking_vals = picking.read(['location_dest_id', 'location_id', 'move_type', 'picking_type_id']) 
                 picking_vals = {
                     key: (value[0] if isinstance(value, tuple) else value)
@@ -624,10 +653,10 @@ class SaleOrder(models.Model):
                 picking_vals['user_id'] = picking.user_id.id
                 
                 list_pickings_moves = [picking_moves[i:i + product_limit] for i in range(0, len(picking_moves), product_limit)]
-                picking.move_ids_without_package = list_pickings_moves[0]
+                picking.move_ids = list_pickings_moves[0]
                 
                 for list_moves in list_pickings_moves[1:]:
-                    picking_vals["move_ids_without_package"] = list_moves
+                    picking_vals["move_ids"] = list_moves
                     new_picking = self.env['stock.picking'].create(picking_vals)
                 
 
@@ -672,3 +701,34 @@ class SaleOrder(models.Model):
             else:
                 order.amount_untaxed_total_signed = order.amount_untaxed
                 order.amount_total_signed = order.amount_total
+
+    invoice_status = fields.Selection(
+        selection_add=[('partially_billed', 'Partially billed')],
+    )
+
+    @api.depends('state', 'order_line.invoice_status', 'order_line.qty_invoiced', 'order_line.product_uom_qty')
+    def _compute_invoice_status(self):
+        sale_done_orders = self.filtered(lambda order: order.state in ('sale', 'done'))
+        other_orders = self - sale_done_orders
+
+        if sale_done_orders:
+            super(SaleOrder, sale_done_orders)._compute_invoice_status()
+
+        if other_orders:
+            super(SaleOrder, other_orders)._compute_invoice_status()
+
+        for order in sale_done_orders:
+            invoiceable_lines = order.order_line.filtered(lambda line: not line.display_type)
+            total_invoiced = sum(invoiceable_lines.mapped('qty_invoiced'))
+            total_invoiceable = sum(
+                line.product_uom_qty
+                if line.product_id.invoice_policy == 'order'
+                else line.qty_delivered
+                for line in invoiceable_lines
+            )
+
+            if total_invoiced > 0 and total_invoiced < total_invoiceable:
+                order.invoice_status = 'partially_billed'
+
+        for order in other_orders:
+            order.invoice_status = order.invoice_status
