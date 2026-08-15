@@ -11,8 +11,8 @@
                             <field name="ref_required"/>
                         </div>
                         <div class="o_setting_right_pane">
-                            <label for="ref_required">Tax Period</label>
-                            <div class="text-muted">Activate the validation of Bank references</div>
+                            <label for="ref_required">Bank reference validation</label>
+                            <div class="text-muted">Activate bank-reference validation for configured bank journals</div>
                         </div>
                     </div>
                 </block>
