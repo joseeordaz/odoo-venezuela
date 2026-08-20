@@ -19,7 +19,7 @@ class ResCompany(models.Model):
     )
 
     validate_partner_name_immutable = fields.Boolean(
-        default=True,
+        default=False,
         string="Prevent renaming contacts with transactions",
     )
     

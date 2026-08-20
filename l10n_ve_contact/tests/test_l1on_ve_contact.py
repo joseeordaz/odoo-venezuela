@@ -63,7 +63,18 @@ class TestResPartner(TransactionCase):
             self.env["purchase.order"].create({"partner_id": partner.id})
             return True
 
-        return False
+        self.env["account.move"].create({
+            "partner_id": partner.id,
+            "move_type": "out_invoice",
+        })
+        return True
+
+    def test_transaction_fixture_is_always_available(self):
+        self.assertTrue(self._create_partner_transaction(self.partner))
+
+    def test_name_immutability_is_disabled_by_default(self):
+        company = self.env["res.company"].create({"name": "Opt-in Test Company"})
+        self.assertFalse(company.validate_partner_name_immutable)
 
     def test_name_change_allowed_without_transactions(self):
         self.company.write({"validate_partner_name_immutable": True})
