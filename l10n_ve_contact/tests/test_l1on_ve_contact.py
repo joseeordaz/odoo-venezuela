@@ -95,6 +95,20 @@ class TestResPartner(TransactionCase):
         with self.assertRaises(ValidationError):
             self.partner.write({"name": "Should Fail"})
 
+    def test_same_name_write_allowed_with_transactions(self):
+        self.company.validate_partner_name_immutable = True
+        self._create_partner_transaction(self.partner)
+
+        self.partner.write({"name": self.partner.name})
+
+    def test_other_active_company_cannot_bypass_transaction_company_lock(self):
+        self.company.validate_partner_name_immutable = True
+        self._create_partner_transaction(self.partner)
+        other_company = self.env["res.company"].create({"name": "Unlocked Company"})
+
+        with self.assertRaises(ValidationError):
+            self.partner.with_company(other_company).write({"name": "Should Fail"})
+
     def test_name_change_allowed_with_transactions_when_disabled(self):
         created = self._create_partner_transaction(self.partner)
         if not created:
