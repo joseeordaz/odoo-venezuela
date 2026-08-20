@@ -102,6 +102,29 @@ class TestStockPickingPhysicalAddress(TransactionCase):
             'Av. Principal, Zona Industrial, Caracas'
         )
 
+    def test_physical_address_recomputes_when_warehouse_changes(self):
+        picking_type = self._get_internal_picking_type(self.warehouse_a)
+        picking = self.env['stock.picking'].create({
+            'picking_type_id': picking_type.id,
+            'location_id': self.warehouse_a.lot_stock_id.id,
+            'location_dest_id': self.warehouse_b.lot_stock_id.id,
+            'move_ids': [Command.create({
+                'product_id': self.product.id,
+                'product_uom_qty': 1,
+            })],
+        })
+        self.assertEqual(
+            picking.source_physical_address,
+            'Av. Principal, Zona Industrial, Caracas'
+        )
+
+        self.warehouse_a.physical_address = 'Nueva dirección física'
+
+        self.assertEqual(
+            picking.source_physical_address,
+            'Nueva dirección física'
+        )
+
 @tagged('post_install', '-at_install', "l10n_ve_stock")
 class TestStockPickingActionPickingDeliveryType(TransactionCase):
 

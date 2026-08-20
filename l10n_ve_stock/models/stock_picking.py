@@ -156,7 +156,12 @@ class StockPicking(models.Model):
         for record in self:
             record.type_delivery_step = record.picking_type_id._get_type_steps()
 
-    @api.depends("location_id", "location_dest_id")
+    @api.depends(
+        "location_id",
+        "location_id.warehouse_id.physical_address",
+        "location_dest_id",
+        "location_dest_id.warehouse_id.physical_address",
+    )
     def _compute_physical_addresses(self):
         for record in self:
             source_wh = record.location_id.warehouse_id
