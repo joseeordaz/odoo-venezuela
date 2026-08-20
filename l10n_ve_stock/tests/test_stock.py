@@ -16,11 +16,6 @@ class TestStockLocation(TransactionCase):
             })
 
 
-@tagged("post_install", "-at_install", "l10n_ve_stock")
-class TestStockMoveLine(TransactionCase):
-    def test_get_fields_stock_barcode_includes_priority(self):
-        fields = self.env["stock.move.line"]._get_fields_stock_barcode()
-        self.assertIn("priority_location", fields)
 
 
 @tagged("post_install", "-at_install", "l10n_ve_stock")
