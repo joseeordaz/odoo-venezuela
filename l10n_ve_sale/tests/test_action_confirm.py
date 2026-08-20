@@ -111,7 +111,16 @@ class TestActionConfirmServiceProducts(TransactionCase):
         })
         sale_order.action_confirm()
         first_picking = sale_order.picking_ids
-        second_picking = first_picking.copy({'move_ids': []})
+        first_destination = first_picking.location_dest_id
+        second_destination = self.env['stock.location'].create({
+            'name': 'Second customer destination',
+            'usage': 'customer',
+        })
+        second_picking = first_picking.copy({
+            'move_ids': [],
+            'location_dest_id': second_destination.id,
+            'origin': 'SECOND-PICKING',
+        })
         self.env['stock.move'].create({
             'product_id': products[2].id,
             'product_uom_qty': 1,
@@ -126,6 +135,18 @@ class TestActionConfirmServiceProducts(TransactionCase):
         self.company.limit_product_qty_out = 1
         sale_order._split_pickings_by_product_limit()
 
-        self.assertEqual(len(sale_order.picking_ids), 3)
-        self.assertEqual(sorted(sale_order.picking_ids.mapped('move_ids').mapped('product_id').ids), sorted(products.ids))
+        first_pickings = sale_order.picking_ids.filtered(
+            lambda picking: picking.location_dest_id == first_destination
+        )
+        second_pickings = sale_order.picking_ids.filtered(
+            lambda picking: picking.location_dest_id == second_destination
+        )
+        self.assertEqual(len(first_pickings), 2)
+        self.assertEqual(len(second_pickings), 1)
+        self.assertEqual(
+            sorted(first_pickings.move_ids.product_id.ids),
+            sorted(products[:2].ids),
+        )
+        self.assertEqual(second_pickings.move_ids.product_id, products[2])
+        self.assertEqual(second_pickings.origin, 'SECOND-PICKING')
         self.assertTrue(all(len(picking.move_ids) == 1 for picking in sale_order.picking_ids))
