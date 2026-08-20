@@ -85,12 +85,7 @@ class TestResPartner(TransactionCase):
     def test_name_change_blocked_with_transactions_when_enabled(self):
         self.company.write({"validate_partner_name_immutable": True})
 
-        created = self._create_partner_transaction(self.partner)
-        if not created:
-            self.skipTest(
-                "No transaction model available in this test environment "
-                "(sale.order/purchase.order)."
-            )
+        self._create_partner_transaction(self.partner)
 
         with self.assertRaises(ValidationError):
             self.partner.write({"name": "Should Fail"})
@@ -110,12 +105,7 @@ class TestResPartner(TransactionCase):
             self.partner.with_company(other_company).write({"name": "Should Fail"})
 
     def test_name_change_allowed_with_transactions_when_disabled(self):
-        created = self._create_partner_transaction(self.partner)
-        if not created:
-            self.skipTest(
-                "No transaction model available in this test environment "
-                "(sale.order/purchase.order)."
-            )
+        self._create_partner_transaction(self.partner)
 
         self.company.write({"validate_partner_name_immutable": False})
         self.partner.write({"name": "Allowed Rename"})
