@@ -597,6 +597,35 @@ class SaleOrder(models.Model):
                     )
                 )
 
+    def _split_pickings_by_product_limit(self):
+        for sale in self:
+            product_limit = sale.company_id.limit_product_qty_out
+            if product_limit <= 0:
+                continue
+            for picking in sale.picking_ids:
+                picking_moves = picking.move_ids
+                if not picking_moves:
+                    continue
+                picking_vals = picking.read([
+                    'location_dest_id', 'location_id', 'move_type', 'picking_type_id'
+                ])[0]
+                picking_vals = {
+                    key: (value[0] if isinstance(value, tuple) else value)
+                    for key, value in picking_vals.items()
+                }
+                picking_vals.update({
+                    'origin': picking.origin,
+                    'partner_id': picking.partner_id.id,
+                    'user_id': picking.user_id.id,
+                })
+                move_batches = [
+                    picking_moves[i:i + product_limit]
+                    for i in range(0, len(picking_moves), product_limit)
+                ]
+                picking.move_ids = move_batches[0]
+                for moves in move_batches[1:]:
+                    self.env['stock.picking'].create({**picking_vals, 'move_ids': moves})
+
     def action_confirm(self):
         skip_not_allow_sell_products_validation = self.env.context.get(
             "skip_not_allow_sell_products_validation", False
@@ -644,31 +673,7 @@ class SaleOrder(models.Model):
 
 
         res = super().action_confirm()
-        for sale in self:
-            picking = sale.picking_ids
-            if not picking:
-                continue
-            product_limit = sale.company_id.limit_product_qty_out
-            if product_limit <= 0:
-                continue
-            picking_moves = picking.move_ids
-            if not picking_moves:
-                continue
-            picking_vals = picking.read(['location_dest_id', 'location_id', 'move_type', 'picking_type_id'])
-            if not picking_vals:
-                continue
-            picking_vals = {
-                key: (value[0] if isinstance(value, tuple) else value)
-                for key, value in picking_vals[0].items()
-            }
-            picking_vals['origin'] = picking.origin
-            picking_vals['partner_id'] = picking.partner_id.id
-            picking_vals['user_id'] = picking.user_id.id
-            list_pickings_moves = [picking_moves[i:i + product_limit] for i in range(0, len(picking_moves), product_limit)]
-            picking.move_ids = list_pickings_moves[0]
-            for list_moves in list_pickings_moves[1:]:
-                picking_vals["move_ids"] = list_moves
-                self.env['stock.picking'].create(picking_vals)
+        self._split_pickings_by_product_limit()
         return res
 
     def cancel_order_after_date(self):
