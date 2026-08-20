@@ -57,6 +57,26 @@ class ResPartner(models.Model):
         tracking=True,
     )
 
+    def _has_name_locked_transactions(self):
+        self.ensure_one()
+        model_checks = {
+            "sale.order": [("partner_id", "=", self.id)],
+            "purchase.order": [("partner_id", "=", self.id)],
+            "account.move": [
+                ("partner_id", "=", self.id),
+                ("move_type", "in", ["out_invoice", "in_invoice"]),
+            ],
+            "account.move.line": [("partner_id", "=", self.id)],
+        }
+        locked_company = ("company_id.validate_partner_name_immutable", "=", True)
+
+        for model, domain in model_checks.items():
+            if model not in self.env.registry.models:
+                continue
+            if self.env[model].sudo().search_count(domain + [locked_company], limit=1):
+                return True
+        return False
+
     def check_duplicate_vat(self, prefix_vat, vat, company_id=None):
         error_message = ""
         domain = [
@@ -152,6 +172,17 @@ class ResPartner(models.Model):
         return super(ResPartner, self).create(vals_list)
 
     def write(self, vals):
+        if "name" in vals:
+            for partner in self:
+                if partner.name == vals["name"]:
+                    continue
+                if partner._has_name_locked_transactions():
+                    raise ValidationError(
+                        _(
+                            "You cannot modify the name of a contact with associated "
+                            "transactions."
+                        )
+                    )
         res = super().write(vals)
         if "prefix_vat" and "vat" in vals:
             for record in self:

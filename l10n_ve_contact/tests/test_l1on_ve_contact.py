@@ -47,3 +47,67 @@ class TestResPartner(TransactionCase):
         self.partner.vat = "123456"
         # Should not raise
         self.partner._check_vat()
+
+    def _create_partner_transaction(self, partner):
+        """Create at least one related transaction for the partner when possible.
+
+        The name immutability constraint checks different models depending on what is
+        installed in the database. This helper tries the safest options and returns
+        True when a record was created.
+        """
+        if "sale.order" in self.env.registry.models:
+            self.env["sale.order"].create({"partner_id": partner.id})
+            return True
+
+        if "purchase.order" in self.env.registry.models:
+            self.env["purchase.order"].create({"partner_id": partner.id})
+            return True
+
+        self.env["account.move"].create({
+            "partner_id": partner.id,
+            "move_type": "out_invoice",
+        })
+        return True
+
+    def test_transaction_fixture_is_always_available(self):
+        self.assertTrue(self._create_partner_transaction(self.partner))
+
+    def test_name_immutability_is_disabled_by_default(self):
+        company = self.env["res.company"].create({"name": "Opt-in Test Company"})
+        self.assertFalse(company.validate_partner_name_immutable)
+
+    def test_name_change_allowed_without_transactions(self):
+        self.company.write({"validate_partner_name_immutable": True})
+
+        self.partner.write({"name": "Renamed Partner"})
+        self.assertEqual(self.partner.name, "Renamed Partner")
+
+    def test_name_change_blocked_with_transactions_when_enabled(self):
+        self.company.write({"validate_partner_name_immutable": True})
+
+        self._create_partner_transaction(self.partner)
+
+        with self.assertRaises(ValidationError):
+            self.partner.write({"name": "Should Fail"})
+
+    def test_same_name_write_allowed_with_transactions(self):
+        self.company.validate_partner_name_immutable = True
+        self._create_partner_transaction(self.partner)
+
+        self.partner.write({"name": self.partner.name})
+
+    def test_other_active_company_cannot_bypass_transaction_company_lock(self):
+        self.company.validate_partner_name_immutable = True
+        self._create_partner_transaction(self.partner)
+        other_company = self.env["res.company"].create({"name": "Unlocked Company"})
+
+        with self.assertRaises(ValidationError):
+            self.partner.with_company(other_company).write({"name": "Should Fail"})
+
+    def test_name_change_allowed_with_transactions_when_disabled(self):
+        self._create_partner_transaction(self.partner)
+
+        self.company.write({"validate_partner_name_immutable": False})
+        self.partner.write({"name": "Allowed Rename"})
+
+        self.assertEqual(self.partner.name, "Allowed Rename")
