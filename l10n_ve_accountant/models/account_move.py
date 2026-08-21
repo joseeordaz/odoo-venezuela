@@ -18,7 +18,8 @@ _logger = logging.getLogger(__name__)
 class AccountMove(models.Model):
     _inherit = "account.move"
     
-    invoice_date_display = fields.Date(string="Invoice Date", default=fields.Date.today)
+    invoice_date = fields.Date(copy=True)
+    invoice_date_display = fields.Date(string="Invoice Date", default=fields.Date.context_today, copy=True)
     is_purchase_international = fields.Boolean(related="journal_id.is_purchase_international")
 
     @api.depends('invoice_date_display')
@@ -144,8 +145,8 @@ class AccountMove(models.Model):
 
     @api.onchange("move_type")
     def _onchange_move_type(self):
-        self.invoice_date = False if self.move_type == "entry" else fields.Date.today()
-        self.invoice_date_display = False if self.move_type == "entry" else fields.Date.today()
+        self.invoice_date = False if self.move_type == "entry" else fields.Date.context_today(self)
+        self.invoice_date_display = False if self.move_type == "entry" else fields.Date.context_today(self)
 
     @api.onchange("journal_id")
     def _onchange_journal_id_reset_international_exempt(self):
@@ -1090,6 +1091,29 @@ class AccountMove(models.Model):
                     ):
                         line.account_id = move.journal_id.default_account_id
 
+    def _is_subject_to_credit_limit(self):
+        """Whether this move must be validated against the partner's credit limit.
+
+        Only documents that *increase* the customer's receivable are checked.
+        Excluded on purpose:
+
+        - ``out_refund``: credit notes reduce the receivable.
+        - ``entry``: payments, advances and IVA/ISLR withholding vouchers, all of
+          which either reduce the receivable or do not affect it.
+        - ``in_*``: vendor documents do not touch the customer's receivable.
+
+        Blocking those made it impossible to collect from a customer that was
+        already over the limit, which is the opposite of what the limit is for.
+
+        The ``skip_credit_limit_check`` context key bypasses the check for flows
+        that carry an explicit authorization (e.g. a manually unlocked sale
+        order). It is opt-in and never set by default.
+        """
+        self.ensure_one()
+        if self.env.context.get("skip_credit_limit_check"):
+            return False
+        return self.move_type in ("out_invoice", "out_receipt")
+
     def action_post(self):
         if not self.env.context.get("move_action_post_alert"):
             for move in self:
@@ -1104,7 +1128,7 @@ class AccountMove(models.Model):
                         'context': {'default_move_id': move.id},
                     }
 
-        for invoice in self:
+        for invoice in self.filtered(lambda move: move._is_subject_to_credit_limit()):
             if (
                 invoice.company_id.account_use_credit_limit
                 and invoice.partner_id.use_partner_credit_limit
@@ -1384,7 +1408,7 @@ class AccountMove(models.Model):
                     return item.get('amount_currency', 0)
             return None
 
-        def _foreign_fallback(balance):
+        def _foreign_fallback(balance): 
             rate_date = move.invoice_date if move.is_invoice(include_receipts=True) else move.date
             return move.company_id.currency_id._convert(
                 balance, move.foreign_currency_id, move.company_id,
@@ -1523,7 +1547,7 @@ class AccountMove(models.Model):
             if not pt_lines:
                 continue
             other = lines.filtered(
-                lambda l: l.display_type != "payment_term"
+                lambda l: l.display_type not in ("payment_term", "cogs")
             )
             fc = move.company_id.foreign_currency_id
             if not fc:
@@ -1541,8 +1565,30 @@ class AccountMove(models.Model):
                 total_debit = aggregate
                 total_credit = aggregate
             else:
-                total_debit = sum(other.mapped("foreign_debit"))
-                total_credit = sum(other.mapped("foreign_credit"))
+                gross_debit = sum(other.mapped("foreign_debit"))
+                gross_credit = sum(other.mapped("foreign_credit"))
+                # Neto, no bruto. Los pares autobalanceados —las líneas COGS
+                # que stock_account agrega dentro de _post(), con el asiento
+                # todavía en draft— aportan el mismo importe como débito y
+                # como crédito. Sumar un solo lado los cuenta una vez y
+                # descuadra el asiento exactamente por ese importe.
+                # Sin líneas de ese tipo, gross_debit es 0 y el neto coincide
+                # con el bruto: mismo comportamiento que antes.
+                total_debit = gross_debit - gross_credit
+                total_credit = gross_credit - gross_debit
+
+                # Un asiento con importes alternos ya invertidos de origen
+                # puede dar neto negativo: en pos2, INV/2026/0137 tiene una
+                # línea de impuesto al débito con el importe alterno en el
+                # haber, y arrastra 71,28 de descuadre antes de llegar aquí.
+                # Ahí el neto no significa nada, y escribir un importe
+                # negativo sería peor que el valor equivocado de antes, así
+                # que se vuelve al bruto. Estos documentos necesitan data-fix,
+                # no una fórmula distinta.
+                if total_debit < 0:
+                    total_debit = gross_debit
+                if total_credit < 0:
+                    total_credit = gross_credit
 
             sorted_pt = pt_lines.sorted("id")
             n = len(sorted_pt)
@@ -1627,7 +1673,7 @@ class AccountMove(models.Model):
                 tax_line.balance = correct_balance
 
         non_pt = move.line_ids.filtered(
-            lambda l: l.display_type != 'payment_term'
+            lambda l: l.display_type not in ('payment_term', 'cogs')
         )
         if not non_pt:
             return

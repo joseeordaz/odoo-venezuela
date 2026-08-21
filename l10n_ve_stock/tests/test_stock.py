@@ -1,5 +1,4 @@
 import logging
-from odoo import Command
 from odoo.tests import TransactionCase, tagged
 from odoo.exceptions import ValidationError
 
@@ -15,8 +14,6 @@ class TestStockLocation(TransactionCase):
                 "usage": "internal",
                 "priority": -1,
             })
-
-
 
 
 @tagged("post_install", "-at_install", "l10n_ve_stock")
@@ -45,38 +42,3 @@ class TestStockQuant(TransactionCase):
         )
         self.assertFalse(quant2.is_physical_location)
 
-@tagged("post_install", "-at_install", "l10n_ve_stock")
-class TestProductTemplate(TransactionCase):
-    def test_check_taxes_id_multiple_taxes_same_company(self):
-        tax_group = self.env["account.tax.group"].create({
-            "name": "Stock Validation Tax Group",
-            "country_id": (
-                self.env.company.account_fiscal_country_id or self.env.ref("base.ve")
-            ).id,
-        })
-        tax1 = self.env["account.tax"].create({
-            "name": "Tax 1",
-            "amount_type": "percent",
-            "amount": 10,
-            "company_id": self.env.company.id,
-            "country_id": tax_group.country_id.id,
-            "tax_group_id": tax_group.id,
-        })
-        tax2 = self.env["account.tax"].create({
-            "name": "Tax 2",
-            "amount_type": "percent",
-            "amount": 20,
-            "company_id": self.env.company.id,
-            "country_id": tax_group.country_id.id,
-            "tax_group_id": tax_group.id,
-        })
-        with self.assertRaises(ValidationError):
-            self.env["product.product"].create({
-                "name": "Product 1",
-                "barcode": "123456",
-                "type": 'consu',
-                "taxes_id": [Command.set((tax1 | tax2).ids)],
-                "product_tmpl_id": self.env["product.template"].create({
-                    "name": "Prod1",
-                }).id,
-            })

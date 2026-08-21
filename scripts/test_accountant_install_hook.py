@@ -14,13 +14,15 @@ class AccountantInstallHookTest(unittest.TestCase):
         module = ROOT / "l10n_ve_accountant"
         manifest = ast.literal_eval((module / "__manifest__.py").read_text())
 
-        self.assertNotEqual(
-            manifest.get("post_init_hook"), "set_main_company_currency_to_vef"
+        self.assertNotIn("post_init_hook", manifest)
+        self.assertNotIn(
+            "set_main_company_currency_to_vef",
+            (module / "__init__.py").read_text(),
         )
         for filename in manifest.get("data", []):
             if filename.endswith(".xml"):
                 data = (module / filename).read_bytes()
-                # Repository XML does not support DTDs; reject it before stdlib parsing.
+                # Repository XML does not support DTDs; reject before parsing.
                 self.assertLessEqual(len(data), 2_000_000, filename)
                 self.assertNotIn(b"<!DOCTYPE", data.upper(), filename)
                 for record in ET.fromstring(data).iter("record"):

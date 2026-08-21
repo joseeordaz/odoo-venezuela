@@ -7,7 +7,7 @@
     "author": "binaural-dev",
     "website": "https://binauraldev.com/",
     "category": "Accounting/Localizations/Account Chart",
-    "version": "19.0.1.0.8",
+    "version": "19.0.1.0.12",
     "depends": [
         "base",
         "web",
@@ -26,6 +26,7 @@
         "data/ir_actions_server.xml",
         "data/paperformats.xml",
         "data/tax_unit_data.xml",
+        "data/res_company_data.xml",
         "views/account_invoice_report.xml",
         "views/account_move.xml",
         "views/account_move_line.xml",

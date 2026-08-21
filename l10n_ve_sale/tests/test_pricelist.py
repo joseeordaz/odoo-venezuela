@@ -17,10 +17,35 @@ class TestSaleOrderForeignPricelist(TransactionCase):
             'name': 'L10n VE Sale Pricelist Test Company',
             'currency_id': usd.id,
             'foreign_currency_id': eur.id,
+            'country_id': self.env.ref('base.ve').id,
         })
         self.env = self.env(context={
             **self.env.context,
             'allowed_company_ids': [company.id],
+        })
+
+        tax_group = self.env['account.tax.group'].create({
+            'name': 'L10n VE Sale Pricelist Test Tax Group',
+            'country_id': company.country_id.id,
+        })
+        sale_tax, purchase_tax = self.env['account.tax'].create([{
+            'name': 'L10n VE Sale Pricelist Test Sale Tax',
+            'amount': 0,
+            'type_tax_use': 'sale',
+            'company_id': company.id,
+            'country_id': company.country_id.id,
+            'tax_group_id': tax_group.id,
+        }, {
+            'name': 'L10n VE Sale Pricelist Test Purchase Tax',
+            'amount': 0,
+            'type_tax_use': 'purchase',
+            'company_id': company.id,
+            'country_id': company.country_id.id,
+            'tax_group_id': tax_group.id,
+        }])
+        company.write({
+            'account_sale_tax_id': sale_tax.id,
+            'account_purchase_tax_id': purchase_tax.id,
         })
 
         self.env['res.currency.rate'].create([{
@@ -35,7 +60,6 @@ class TestSaleOrderForeignPricelist(TransactionCase):
             'company_id': company.id,
         }])
         
-
         pricelist_usd = self.env['product.pricelist'].create({
             'name': 'USD Pricelist',
             'currency_id': usd.id,

@@ -190,6 +190,7 @@ class TestMultiCurrencyRounding(TransactionCase):
             'journal_id': self.sale_journal.id,
             'invoice_date': fields.Date.today(),
             'company_id': self.company.id,
+            'pricelist_id': pl.id if pl else False,
             'invoice_line_ids': [
                 (0, 0, {
                     'product_id': self.product.id,

@@ -98,6 +98,9 @@ class TestProductTemplateCheckTaxesId(TransactionCase):
                 "taxes_id": [Command.set((tax1 | tax2).ids)],
             })
 
+    def test_check_taxes_id_multiple_taxes_same_company(self):
+        self.test_multiple_taxes_raises()
+
 
 @tagged("post_install", "-at_install", "l10n_ve_stock")
 class TestProductTemplateComputePricesWithTax(TransactionCase):
@@ -152,9 +155,7 @@ class TestProductTemplateComputePricesWithTax(TransactionCase):
 class TestProductTemplateComputeAvailableQuantity(TransactionCase):
     def setUp(self):
         super().setUp()
-        self.warehouse = self.env["stock.warehouse"].search(
-            [("company_id", "=", self.env.company.id)], limit=1
-        )
+        self.warehouse = self.env["stock.warehouse"].search([], limit=1)
         self.location = self.warehouse.lot_stock_id
 
     def test_available_quantity_use_free_qty(self):

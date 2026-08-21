@@ -17,10 +17,34 @@ class TestSaleOrderRate(TransactionCase):
             'name': 'L10n VE Sale Rate Test Company',
             'currency_id': self.ves.id,
             'foreign_currency_id': self.usd.id,
+            'country_id': self.env.ref('base.ve').id,
         })
         self.env = self.env(context={
             **self.env.context,
             'allowed_company_ids': [self.company.id],
+        })
+        tax_group = self.env['account.tax.group'].create({
+            'name': 'L10n VE Sale Rate Test Tax Group',
+            'country_id': self.company.country_id.id,
+        })
+        sale_tax, purchase_tax = self.env['account.tax'].create([{
+            'name': 'L10n VE Sale Rate Test Sale Tax',
+            'amount': 0,
+            'type_tax_use': 'sale',
+            'company_id': self.company.id,
+            'country_id': self.company.country_id.id,
+            'tax_group_id': tax_group.id,
+        }, {
+            'name': 'L10n VE Sale Rate Test Purchase Tax',
+            'amount': 0,
+            'type_tax_use': 'purchase',
+            'company_id': self.company.id,
+            'country_id': self.company.country_id.id,
+            'tax_group_id': tax_group.id,
+        }])
+        self.company.write({
+            'account_sale_tax_id': sale_tax.id,
+            'account_purchase_tax_id': purchase_tax.id,
         })
         
         self.today = fields.Date.today()

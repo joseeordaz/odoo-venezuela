@@ -31,12 +31,7 @@ class TestPosSessionIgtfConfiguration(TransactionCase):
         )
 
     def test_pos_without_igtf_method_does_not_require_igtf_account(self):
-        self.env.company.write(
-            {
-                "customer_account_igtf_id": False,
-                "igtf_percentage": 3.0,
-            }
-        )
+        self.env.company.customer_account_igtf_id = False
         session = self._new_session(apply_igtf=False)
 
         with patch.object(
@@ -49,12 +44,7 @@ class TestPosSessionIgtfConfiguration(TransactionCase):
         core_action.assert_called_once_with(session)
 
     def test_pos_with_igtf_method_requires_igtf_account(self):
-        self.env.company.write(
-            {
-                "customer_account_igtf_id": False,
-                "igtf_percentage": 3.0,
-            }
-        )
+        self.env.company.customer_account_igtf_id = False
 
         with self.assertRaisesRegex(ValidationError, "IGTF"):
             self._new_session(apply_igtf=True).action_pos_session_open()

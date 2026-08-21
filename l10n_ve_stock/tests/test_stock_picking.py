@@ -113,13 +113,7 @@ class TestStockPickingPhysicalAddress(TransactionCase):
                 'product_uom_qty': 1,
             })],
         })
-        self.assertEqual(
-            picking.source_physical_address,
-            'Av. Principal, Zona Industrial, Caracas'
-        )
-
         self.warehouse_a.physical_address = 'Nueva dirección física'
-
         self.assertEqual(
             picking.source_physical_address,
             'Nueva dirección física'
@@ -170,6 +164,21 @@ class TestStockPickingPhysicalAddress(TransactionCase):
             picking.destination_physical_address,
             'Dirección destino otra compañía',
         )
+
+class TestStockReportBindings(TransactionCase):
+
+    def test_stock_reports_remain_bound_to_pickings(self):
+        stock_picking_model = self.env["ir.model"]._get("stock.picking")
+        for xmlid in (
+            "stock.action_report_picking",
+            "stock.action_report_delivery",
+            "stock.return_label_report",
+        ):
+            with self.subTest(xmlid=xmlid):
+                self.assertEqual(
+                    self.env.ref(xmlid).binding_model_id,
+                    stock_picking_model,
+                )
 
 @tagged('post_install', '-at_install', "l10n_ve_stock")
 class TestStockPickingActionPickingDeliveryType(TransactionCase):

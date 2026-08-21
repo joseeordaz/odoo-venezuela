@@ -46,7 +46,7 @@ class TestDataFiles(TransactionCase):
             "data",
             "fees_retention_data.xml",
         )
-        # Source-controlled module data, not user-supplied XML.
+        # This parses source-controlled module data, never untrusted XML.
         tax_unit_fields = ElementTree.parse(data_path).findall(
             ".//field[@name='tax_unit_ids']"
         )
@@ -56,7 +56,7 @@ class TestDataFiles(TransactionCase):
         )
 
         tax_unit = self.env.ref(canonical_xmlid)
-        fee_xmlids = (
+        for xmlid in (
             "fees_retention_data_substrat_l10n_ve_payment_extension",
             "fees_retention_data_percentage_one_l10n_ve_payment_extension",
             "fees_retention_data_percentage_two_l10n_ve_payment_extension",
@@ -64,7 +64,6 @@ class TestDataFiles(TransactionCase):
             "fees_retention_data_l10n_ve_percentage_three_payment_extension",
             "fees_retention_data_percentage_four_l10n_ve_payment_extension",
             "fees_retention_data_percentage_five_l10n_ve_payment_extension",
-        )
-        for xmlid in fee_xmlids:
+        ):
             fee = self.env.ref(f"l10n_ve_payment_extension.{xmlid}")
             self.assertEqual(fee.tax_unit_ids, tax_unit)

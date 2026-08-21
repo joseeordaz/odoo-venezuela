@@ -124,4 +124,5 @@
     <record id="stock.action_scrap" model="ir.actions.server">
         <field name="group_ids" eval="[Command.link(ref('l10n_ve_stock.group_hide_discard_inventory_transfers_button'))]"/>
     </record>
+
 </odoo>
