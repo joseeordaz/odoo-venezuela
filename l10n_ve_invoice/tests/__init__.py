@@ -7,3 +7,4 @@ from . import test_tax_action_post
 from . import test_international_purchase
 from . import test_res_config_settings
 from . import test_accounting_reports
+from . import test_report_print_boundary
