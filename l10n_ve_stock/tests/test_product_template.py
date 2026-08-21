@@ -1,3 +1,4 @@
+from odoo import Command
 from odoo.tests import TransactionCase, tagged
 from odoo.exceptions import ValidationError
 
@@ -41,73 +42,107 @@ class TestProductTemplateCheckListPrice(TransactionCase):
 
 @tagged("post_install", "-at_install", "l10n_ve_stock")
 class TestProductTemplateCheckTaxesId(TransactionCase):
-    def test_single_tax_ok(self):
-        tax = self.env["account.tax"].create({
-            "name": "Single Tax",
-            "amount_type": "percent",
-            "amount": 10,
-            "company_id": self.env.company.id,
+    def setUp(self):
+        super().setUp()
+        self.company = self.env["res.company"].create({
+            "name": "Stock Tax Test Company",
+            "currency_id": self.env.company.currency_id.id,
+            "country_id": self.env.ref("base.ve").id,
         })
-        tmpl = self.env["product.template"].create({
+        self.test_env = self.env(context={
+            **self.env.context,
+            "allowed_company_ids": [self.company.id],
+        })
+        self.tax_group = self.test_env["account.tax.group"].create({
+            "name": "Stock Test Tax Group",
+            "country_id": self.company.country_id.id,
+        })
+
+    def create_tax(self, name, amount):
+        return self.test_env["account.tax"].create({
+            "name": name,
+            "amount_type": "percent",
+            "amount": amount,
+            "company_id": self.company.id,
+            "country_id": self.tax_group.country_id.id,
+            "tax_group_id": self.tax_group.id,
+        })
+
+    def test_single_tax_ok(self):
+        tax = self.create_tax("Single Tax", 10)
+        tmpl = self.test_env["product.template"].create({
             "name": "Single Tax Product",
             "type": "consu",
-            "taxes_id": [(6, 0, [tax.id])],
+            "company_id": self.company.id,
+            "taxes_id": [Command.set(tax.ids)],
         })
         self.assertEqual(len(tmpl.taxes_id), 1)
 
     def test_no_tax_ok(self):
-        tmpl = self.env["product.template"].create({
+        tmpl = self.test_env["product.template"].create({
             "name": "No Tax Product",
             "type": "consu",
-            "taxes_id": [(5, 0, 0)],
+            "company_id": self.company.id,
+            "taxes_id": False,
         })
         self.assertEqual(len(tmpl.taxes_id), 0)
 
     def test_multiple_taxes_raises(self):
-        tax1 = self.env["account.tax"].create({
-            "name": "Tax A",
-            "amount_type": "percent",
-            "amount": 10,
-            "company_id": self.env.company.id,
-        })
-        tax2 = self.env["account.tax"].create({
-            "name": "Tax B",
-            "amount_type": "percent",
-            "amount": 20,
-            "company_id": self.env.company.id,
-        })
+        tax1 = self.create_tax("Tax A", 10)
+        tax2 = self.create_tax("Tax B", 20)
         with self.assertRaises(ValidationError):
-            self.env["product.template"].create({
+            self.test_env["product.template"].create({
                 "name": "Multi Tax Product",
                 "type": "consu",
-                "taxes_id": [(6, 0, [tax1.id, tax2.id])],
+                "company_id": self.company.id,
+                "taxes_id": [Command.set((tax1 | tax2).ids)],
             })
 
 
 @tagged("post_install", "-at_install", "l10n_ve_stock")
 class TestProductTemplateComputePricesWithTax(TransactionCase):
+    def setUp(self):
+        super().setUp()
+        self.company = self.env["res.company"].create({
+            "name": "Stock Price Test Company",
+            "currency_id": self.env.company.currency_id.id,
+            "country_id": self.env.ref("base.ve").id,
+        })
+        self.test_env = self.env(context={
+            **self.env.context,
+            "allowed_company_ids": [self.company.id],
+        })
+        self.tax_group = self.test_env["account.tax.group"].create({
+            "name": "Stock Price Test Tax Group",
+            "country_id": self.company.country_id.id,
+        })
+
     def test_prices_without_tax(self):
-        tmpl = self.env["product.template"].create({
+        tmpl = self.test_env["product.template"].create({
             "name": "No Tax Price",
             "type": "consu",
+            "company_id": self.company.id,
             "list_price": 100,
-            "taxes_id": [(5, 0, 0)],
+            "taxes_id": False,
         })
         self.assertEqual(tmpl.price_with_tax, 100)
         self.assertEqual(tmpl.price_without_tax, 100)
 
     def test_prices_with_tax(self):
-        tax = self.env["account.tax"].create({
+        tax = self.test_env["account.tax"].create({
             "name": "IVA 16",
             "amount_type": "percent",
             "amount": 16,
-            "company_id": self.env.company.id,
+            "company_id": self.company.id,
+            "country_id": self.tax_group.country_id.id,
+            "tax_group_id": self.tax_group.id,
         })
-        tmpl = self.env["product.template"].create({
+        tmpl = self.test_env["product.template"].create({
             "name": "With Tax Price",
             "type": "consu",
+            "company_id": self.company.id,
             "list_price": 100,
-            "taxes_id": [(6, 0, [tax.id])],
+            "taxes_id": [Command.set(tax.ids)],
         })
         self.assertAlmostEqual(tmpl.price_with_tax, 116, places=2)
         self.assertAlmostEqual(tmpl.price_without_tax, 100, places=2)
@@ -117,7 +152,9 @@ class TestProductTemplateComputePricesWithTax(TransactionCase):
 class TestProductTemplateComputeAvailableQuantity(TransactionCase):
     def setUp(self):
         super().setUp()
-        self.warehouse = self.env["stock.warehouse"].search([], limit=1)
+        self.warehouse = self.env["stock.warehouse"].search(
+            [("company_id", "=", self.env.company.id)], limit=1
+        )
         self.location = self.warehouse.lot_stock_id
 
     def test_available_quantity_use_free_qty(self):
