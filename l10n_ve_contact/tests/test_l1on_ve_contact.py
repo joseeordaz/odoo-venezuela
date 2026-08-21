@@ -63,7 +63,18 @@ class TestResPartner(TransactionCase):
             self.env["purchase.order"].create({"partner_id": partner.id})
             return True
 
-        return False
+        self.env["account.move"].create({
+            "partner_id": partner.id,
+            "move_type": "out_invoice",
+        })
+        return True
+
+    def test_transaction_fixture_is_always_available(self):
+        self.assertTrue(self._create_partner_transaction(self.partner))
+
+    def test_name_immutability_is_disabled_by_default(self):
+        company = self.env["res.company"].create({"name": "Opt-in Test Company"})
+        self.assertFalse(company.validate_partner_name_immutable)
 
     def test_name_change_allowed_without_transactions(self):
         self.company.write({"validate_partner_name_immutable": True})
@@ -74,23 +85,27 @@ class TestResPartner(TransactionCase):
     def test_name_change_blocked_with_transactions_when_enabled(self):
         self.company.write({"validate_partner_name_immutable": True})
 
-        created = self._create_partner_transaction(self.partner)
-        if not created:
-            self.skipTest(
-                "No transaction model available in this test environment "
-                "(sale.order/purchase.order)."
-            )
+        self._create_partner_transaction(self.partner)
 
         with self.assertRaises(ValidationError):
             self.partner.write({"name": "Should Fail"})
 
+    def test_same_name_write_allowed_with_transactions(self):
+        self.company.validate_partner_name_immutable = True
+        self._create_partner_transaction(self.partner)
+
+        self.partner.write({"name": self.partner.name})
+
+    def test_other_active_company_cannot_bypass_transaction_company_lock(self):
+        self.company.validate_partner_name_immutable = True
+        self._create_partner_transaction(self.partner)
+        other_company = self.env["res.company"].create({"name": "Unlocked Company"})
+
+        with self.assertRaises(ValidationError):
+            self.partner.with_company(other_company).write({"name": "Should Fail"})
+
     def test_name_change_allowed_with_transactions_when_disabled(self):
-        created = self._create_partner_transaction(self.partner)
-        if not created:
-            self.skipTest(
-                "No transaction model available in this test environment "
-                "(sale.order/purchase.order)."
-            )
+        self._create_partner_transaction(self.partner)
 
         self.company.write({"validate_partner_name_immutable": False})
         self.partner.write({"name": "Allowed Rename"})

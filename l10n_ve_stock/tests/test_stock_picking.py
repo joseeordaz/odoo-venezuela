@@ -102,6 +102,84 @@ class TestStockPickingPhysicalAddress(TransactionCase):
             'Av. Principal, Zona Industrial, Caracas'
         )
 
+    def test_physical_address_recomputes_when_warehouse_changes(self):
+        picking_type = self._get_internal_picking_type(self.warehouse_a)
+        picking = self.env['stock.picking'].create({
+            'picking_type_id': picking_type.id,
+            'location_id': self.warehouse_a.lot_stock_id.id,
+            'location_dest_id': self.warehouse_b.lot_stock_id.id,
+            'move_ids': [Command.create({
+                'product_id': self.product.id,
+                'product_uom_qty': 1,
+            })],
+        })
+        self.warehouse_a.physical_address = 'Nueva dirección física'
+        self.assertEqual(
+            picking.source_physical_address,
+            'Nueva dirección física'
+        )
+
+    def test_physical_addresses_use_the_picking_company_warehouses(self):
+        other_company = self.env['res.company'].create({
+            'name': 'Other Test Company',
+            'currency_id': self.env.company.currency_id.id,
+        })
+        company_context = {
+            **self.env.context,
+            'allowed_company_ids': [self.env.company.id, other_company.id],
+        }
+        warehouse_model = self.env['stock.warehouse'].with_context(
+            company_context,
+        ).with_company(other_company)
+        source_warehouse = warehouse_model.create({
+            'name': 'Test WH A',
+            'code': 'TWHA',
+            'company_id': other_company.id,
+            'physical_address': 'Dirección origen otra compañía',
+        })
+        destination_warehouse = warehouse_model.create({
+            'name': 'Test WH B',
+            'code': 'TWHB',
+            'company_id': other_company.id,
+            'physical_address': 'Dirección destino otra compañía',
+        })
+        picking = self.env['stock.picking'].with_context(
+            company_context,
+        ).with_company(other_company).create({
+            'company_id': other_company.id,
+            'picking_type_id': source_warehouse.int_type_id.id,
+            'location_id': source_warehouse.lot_stock_id.id,
+            'location_dest_id': destination_warehouse.lot_stock_id.id,
+            'move_ids': [Command.create({
+                'product_id': self.product.id,
+                'product_uom_qty': 1,
+            })],
+        })
+
+        self.assertEqual(
+            picking.source_physical_address,
+            'Dirección origen otra compañía',
+        )
+        self.assertEqual(
+            picking.destination_physical_address,
+            'Dirección destino otra compañía',
+        )
+
+class TestStockReportBindings(TransactionCase):
+
+    def test_stock_reports_remain_bound_to_pickings(self):
+        stock_picking_model = self.env["ir.model"]._get("stock.picking")
+        for xmlid in (
+            "stock.action_report_picking",
+            "stock.action_report_delivery",
+            "stock.return_label_report",
+        ):
+            with self.subTest(xmlid=xmlid):
+                self.assertEqual(
+                    self.env.ref(xmlid).binding_model_id,
+                    stock_picking_model,
+                )
+
 @tagged('post_install', '-at_install', "l10n_ve_stock")
 class TestStockPickingActionPickingDeliveryType(TransactionCase):
 

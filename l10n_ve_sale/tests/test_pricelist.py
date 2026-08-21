@@ -7,25 +7,46 @@ class TestSaleOrderForeignPricelist(TransactionCase):
 
     def setUp(self):
         super().setUp()
-        company = self.env.ref('base.main_company')
-        ves = self.env.ref('base.VES')
         usd = self.env.ref('base.USD')
         eur = self.env.ref('base.EUR')
         
         usd.write({'active': True})
         eur.write({'active': True})
 
-        self.env['res.currency.rate'].search([
-            ('currency_id', 'in', (usd.id, eur.id)),
-            ('company_id', '=', company.id),
-        ]).unlink()
+        company = self.env['res.company'].create({
+            'name': 'L10n VE Sale Pricelist Test Company',
+            'currency_id': usd.id,
+            'foreign_currency_id': eur.id,
+            'country_id': self.env.ref('base.ve').id,
+        })
+        self.env = self.env(context={
+            **self.env.context,
+            'allowed_company_ids': [company.id],
+        })
 
-        self.env['res.currency.rate'].create([
-            {'name': '2026-01-01', 'currency_id': usd.id, 'rate': 1.0, 'company_id': company.id},
-            {'name': '2026-01-01', 'currency_id': eur.id, 'rate': 0.9, 'company_id': company.id}
-        ])
-        company.currency_id = ves.id
-        company.foreign_currency_id = usd.id
+        tax_group = self.env['account.tax.group'].create({
+            'name': 'L10n VE Sale Pricelist Test Tax Group',
+            'country_id': company.country_id.id,
+        })
+        sale_tax, purchase_tax = self.env['account.tax'].create([{
+            'name': 'L10n VE Sale Pricelist Test Sale Tax',
+            'amount': 0,
+            'type_tax_use': 'sale',
+            'company_id': company.id,
+            'country_id': company.country_id.id,
+            'tax_group_id': tax_group.id,
+        }, {
+            'name': 'L10n VE Sale Pricelist Test Purchase Tax',
+            'amount': 0,
+            'type_tax_use': 'purchase',
+            'company_id': company.id,
+            'country_id': company.country_id.id,
+            'tax_group_id': tax_group.id,
+        }])
+        company.write({
+            'account_sale_tax_id': sale_tax.id,
+            'account_purchase_tax_id': purchase_tax.id,
+        })
 
         self.env['res.currency.rate'].create([{
             'name': fields.Date.today(),
@@ -39,11 +60,6 @@ class TestSaleOrderForeignPricelist(TransactionCase):
             'company_id': company.id,
         }])
         
-        company.write({
-            'currency_id': usd.id,
-            'foreign_currency_id': eur.id,
-        })
-
         pricelist_usd = self.env['product.pricelist'].create({
             'name': 'USD Pricelist',
             'currency_id': usd.id,

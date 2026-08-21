@@ -41,21 +41,3 @@ def execute_script_sql_two(env, new_name, old_name):
         """,
         (new_module, new_name, old_name)
     )
-def set_main_company_currency_to_vef(env):
-    """Set main company currency to VEF via SQL.
-
-    The ORM's ``account.models.company.write`` raises ``UserError`` when
-    journal items exist (installed by ``account`` module before this
-    post-hook runs), so we bypass it with a direct SQL update.
-    """
-    env.cr.execute(
-        """UPDATE res_company SET currency_id = (
-               SELECT res_id FROM ir_model_data
-               WHERE module='base' AND name='VEF'
-               LIMIT 1
-           ) WHERE id = (
-               SELECT res_id FROM ir_model_data
-               WHERE module='base' AND name='main_company'
-               LIMIT 1
-           )"""
-    )
