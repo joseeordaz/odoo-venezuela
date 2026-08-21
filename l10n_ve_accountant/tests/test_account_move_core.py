@@ -433,6 +433,16 @@ class TestAccountMoveCore(TransactionCase):
                 "type": "purchase", "company_id": self.company.id,
                 "is_purchase_international": True,
             })
+        other_company = self.env["res.company"].create({
+            "name": "Other Company",
+            "currency_id": self.company.currency_id.id,
+        })
+        other_journal = self.env["account.journal"].sudo().create({
+            "name": "Intl Purchase Other Company", "code": "OINP",
+            "type": "purchase", "company_id": other_company.id,
+            "is_purchase_international": True,
+        })
+        self.assertTrue(other_journal.is_purchase_international)
         purchase_journal.write({"is_purchase_international": False})
 
     # ═══════════════════════════════════════════════════════════════
