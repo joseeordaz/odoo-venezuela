@@ -11,17 +11,17 @@ class TestSaleOrderRate(TransactionCase):
 
     def setUp(self):
         super().setUp()
-        self.company = self.env.company
-        
-        # Ensure distinct currencies
         self.ves = self.env.ref('base.VEF')
         self.usd = self.env.ref('base.USD')
-        
-        # Setup Company Currency (VES)
-        self.company.currency_id = self.ves
-
-        # Setup Foreign Currency (USD) for the test
-        self.company.foreign_currency_id = self.usd
+        self.company = self.env['res.company'].create({
+            'name': 'L10n VE Sale Rate Test Company',
+            'currency_id': self.ves.id,
+            'foreign_currency_id': self.usd.id,
+        })
+        self.env = self.env(context={
+            **self.env.context,
+            'allowed_company_ids': [self.company.id],
+        })
         
         self.today = fields.Date.today()
         
