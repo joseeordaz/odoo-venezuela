@@ -155,7 +155,9 @@ class TestProductTemplateComputePricesWithTax(TransactionCase):
 class TestProductTemplateComputeAvailableQuantity(TransactionCase):
     def setUp(self):
         super().setUp()
-        self.warehouse = self.env["stock.warehouse"].search([], limit=1)
+        self.warehouse = self.env["stock.warehouse"].search(
+            [("company_id", "=", self.env.company.id)], limit=1
+        )
         self.location = self.warehouse.lot_stock_id
 
     def test_available_quantity_use_free_qty(self):

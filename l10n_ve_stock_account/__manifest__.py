@@ -9,6 +9,7 @@
     "category": "Stock Account",
     "version": "19.0.2.0.4",
     "depends": [
+        "account_invoice_pricelist",
         "l10n_ve_stock",
         "l10n_ve_invoice",
         "l10n_ve_accountant",
