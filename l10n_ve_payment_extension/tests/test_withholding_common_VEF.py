@@ -25,6 +25,19 @@ class RetentionTestCommon(TransactionCase):
             'active':True
         })
 
+        # Configure the company currencies before creating rates. A fresh Odoo
+        # database starts with USD as the company currency, and rates created
+        # for the company currency are normalized instead of representing the
+        # intended VEF/USD conversion.
+        self.company.write(
+            {
+                "currency_id": self.currency_vef.id,
+                "foreign_currency_id": self.currency_usd.id,
+                "taxpayer_type": "formal",
+                "country_id": 28,
+            }
+        )
+
         self.rate = 390.2944  # 1 USD = 201.47bs
         self.currency_usd.write({
             'rate_ids': [
@@ -43,15 +56,6 @@ class RetentionTestCommon(TransactionCase):
             'active':True
         })
 
-
-        self.company.write(
-            {
-                "currency_id": self.currency_vef.id,
-                "foreign_currency_id": self.currency_usd.id,
-                "taxpayer_type":'formal',
-                "country_id": 28,
-            }
-        )
 
         # Concepto 1: Honorarios Profesionales Pagados a
         self.concept_one = self.env.ref('l10n_ve_payment_extension.payment_concept_one_l10n_ve_payment_extension', raise_if_not_found=False)
