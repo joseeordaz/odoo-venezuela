@@ -217,14 +217,14 @@ class AccountPayment(models.Model):
             )
         return res
 
-    @api.depends("date", "currency_id")
+    @api.depends("date", "foreign_currency_id")
     def _compute_rate(self):
         """
         Compute the rate of the payment using the compute_rate method of the res.currency.rate model.
 
         foreign_rate/foreign_inverse_rate are stored+readonly=False, so the wizard's
         create() call can set them explicitly with the indexation-aware rate. But
-        being @api.depends("date", "currency_id") means ANY later write to those
+        being @api.depends("date", "foreign_currency_id") means ANY later write to those
         fields (e.g. a manual date correction) silently recomputes and overwrites
         that value with today's rate, discarding the invoice-date rate for
         non-indexed payments. Honor l10n_ve_conversion_date here too so a recompute
