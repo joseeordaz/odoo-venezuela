@@ -190,6 +190,24 @@ class AccountPayment(models.Model):
         Override the create method to set the rate of the payment to its move.
         """
         payments = super().create(vals_list)
+        for vals, payment in zip(vals_list, payments):
+            if vals.get("is_retention"):
+                _logger.error(
+                    "[TRACE-payment-rate-create] vals=%s payment=%s",
+                    {key: vals.get(key) for key in (
+                        "company_id", "currency_id", "foreign_currency_id",
+                        "date", "foreign_rate", "foreign_inverse_rate",
+                    )},
+                    {
+                        "id": payment.id,
+                        "company_id": payment.company_id.id,
+                        "currency_id": payment.currency_id.id,
+                        "foreign_currency_id": payment.foreign_currency_id.id,
+                        "date": payment.date,
+                        "foreign_rate": payment.foreign_rate,
+                        "foreign_inverse_rate": payment.foreign_inverse_rate,
+                    },
+                )
         for payment in payments.with_context(skip_account_move_synchronization=True):
             payment.move_id.write(
                 {
@@ -236,6 +254,24 @@ class AccountPayment(models.Model):
             rate_values = Rate.compute_rate(
                 payment.foreign_currency_id.id, conversion_date
             )
+            if payment.is_retention:
+                matching_rates = Rate.search([
+                    ("currency_id", "=", payment.foreign_currency_id.id),
+                    ("company_id", "=", self.env.company.id),
+                    ("name", "<=", conversion_date),
+                ], order="name DESC", limit=3)
+                _logger.error(
+                    "[TRACE-payment-rate-compute] payment_id=%s company_id=%s env_company_id=%s currency_id=%s foreign_currency_id=%s date=%s conversion_date=%s rate_values=%s matching_rates=%s",
+                    payment.id,
+                    payment.company_id.id,
+                    self.env.company.id,
+                    payment.currency_id.id,
+                    payment.foreign_currency_id.id,
+                    payment.date,
+                    conversion_date,
+                    rate_values,
+                    [(rate.id, rate.name, rate.rate, rate.company_rate, rate.inverse_company_rate) for rate in matching_rates],
+                )
             payment.update(rate_values)
 
     @api.depends("date", "currency_id")

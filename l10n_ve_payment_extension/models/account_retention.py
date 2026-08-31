@@ -887,7 +887,19 @@ class AccountRetention(models.Model):
                 lines_to_link_by_vals[id(vals)] = lines
 
             if payment_vals_list:
+                _logger.error(
+                    "[TRACE-payment-rate-retention-before-create] vals=%s",
+                    [{key: vals.get(key) for key in (
+                        "company_id", "currency_id", "foreign_currency_id",
+                        "date", "foreign_rate", "foreign_inverse_rate",
+                    )} for vals in payment_vals_list],
+                )
                 created_payments = Payment.create(payment_vals_list)
+
+                _logger.error(
+                    "[TRACE-payment-rate-retention-after-create] payments=%s",
+                    [(payment.id, payment.foreign_currency_id.id, payment.foreign_rate, payment.foreign_inverse_rate) for payment in created_payments],
+                )
 
                 retention.write({
                     "payment_ids": [Command.link(pay.id) for pay in created_payments]
@@ -900,6 +912,10 @@ class AccountRetention(models.Model):
                         payment.write({"retention_line_ids": [Command.link(l.id) for l in associated_lines]})
                 
                 created_payments.compute_retention_amount_from_retention_lines()
+                _logger.error(
+                    "[TRACE-payment-rate-retention-after-amount] payments=%s",
+                    [(payment.id, payment.foreign_currency_id.id, payment.foreign_rate, payment.foreign_inverse_rate) for payment in created_payments],
+                )
 
     def _prepare_retention_payment_vals(self, move, lines):
         """
