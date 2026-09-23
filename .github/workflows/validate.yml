@@ -1,0 +1,33 @@
+name: Validate localization addons
+
+on:
+  push:
+    branches:
+      - hola/main
+      - "reconcile/**"
+  pull_request:
+    branches: [hola/main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Check patch whitespace against Binaural upstream
+        run: |
+          git remote add upstream https://github.com/binaural-dev/odoo-venezuela.git
+          git fetch --no-tags upstream 19.0:refs/remotes/upstream/19.0
+          git diff --check upstream/19.0...HEAD
+      - run: python3 scripts/validate_repo.py
+      - run: python3 -m unittest scripts.test_validate_repo scripts.test_minimal_patch_stack
