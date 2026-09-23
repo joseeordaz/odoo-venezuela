@@ -12,7 +12,6 @@
         "base",
         "web",
         "account",
-        "account_reports",
         "purchase",
         "sale",
         "l10n_ve_base",
