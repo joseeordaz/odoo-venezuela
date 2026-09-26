@@ -20,6 +20,12 @@ class MinimalPatchStackTest(unittest.TestCase):
         )
         self.assertNotIn("account_reports", manifest["depends"])
 
+    def test_donation_community_closure(self):
+        manifest = ast.literal_eval(self.source("l10n_ve_donation/__manifest__.py"))
+        self.assertNotIn("account_asset", manifest["depends"])
+        self.assertNotIn("account_asset", self.source("l10n_ve_donation/models/__init__.py"))
+        self.assertNotIn("test_account_asset", self.source("l10n_ve_donation/tests/__init__.py"))
+
     def test_accountant_install_preserves_company_currency(self):
         module = ROOT / "l10n_ve_accountant"
         manifest = ast.literal_eval((module / "__manifest__.py").read_text())
