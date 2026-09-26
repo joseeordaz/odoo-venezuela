@@ -20,6 +20,7 @@ class TestValidationWorkflow(unittest.TestCase):
 
 class TestDeployableDependencies(unittest.TestCase):
     def run_validator(self, dependencies):
+        dependencies = {"l10n_ve_donation": [], **dependencies}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for module, depends in dependencies.items():
@@ -40,6 +41,18 @@ class TestDeployableDependencies(unittest.TestCase):
         }
         with self.assertRaisesRegex(
             SystemExit, "l10n_ve_sale -> web_enterprise"
+        ):
+            self.run_validator(dependencies)
+
+    def test_rejects_donation_account_asset_dependency(self):
+        dependencies = {
+            "l10n_ve_contact": [],
+            "l10n_ve_sale": [],
+            "l10n_ve_stock": [],
+            "l10n_ve_donation": ["account_asset"],
+        }
+        with self.assertRaisesRegex(
+            SystemExit, "l10n_ve_donation -> account_asset"
         ):
             self.run_validator(dependencies)
 

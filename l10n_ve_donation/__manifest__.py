@@ -12,7 +12,6 @@
         "l10n_ve_sale",
         "l10n_ve_stock_account",
         "stock_account",
-        "account_asset",
     ],
     "data": [
         "data/donation_certificate_paperformat.xml",

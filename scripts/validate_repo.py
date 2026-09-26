@@ -7,8 +7,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEPLOYABLE_MODULES = ("l10n_ve_contact", "l10n_ve_sale", "l10n_ve_stock")
+DEPLOYABLE_MODULES = ("l10n_ve_contact", "l10n_ve_sale", "l10n_ve_stock", "l10n_ve_donation")
 BANNED_DEPENDENCIES = {
+    "account_asset",
     "account_reports",
     "account_accountant",
     "currency_rate_live",
