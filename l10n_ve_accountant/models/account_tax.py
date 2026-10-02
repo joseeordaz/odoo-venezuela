@@ -1,6 +1,6 @@
 from odoo.tools.float_utils import float_round
 from odoo import api, models, _
-from odoo.exceptions import ValidationError
+from odoo.exceptions import AccessError, ValidationError
 from odoo.tools.misc import formatLang
 
 import logging
@@ -10,6 +10,13 @@ _logger = logging.getLogger(__name__)
 
 class AccountTax(models.Model):
     _inherit = "account.tax"
+
+    def write(self, vals):
+        if (vals.get("active") is False
+                and self.env.user.has_group("l10n_ve_accountant.group_fiscal_config_support")
+                and not self.env.user.has_group("account.group_account_manager")):
+            raise AccessError(_("Only an accounting manager can archive taxes."))
+        return super().write(vals)
 
     @api.model
     def _fix_base_amount_for_multi_currency(self, res, record):
