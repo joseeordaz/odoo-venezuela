@@ -14,6 +14,11 @@ class MinimalPatchStackTest(unittest.TestCase):
     def source(self, path):
         return (ROOT / path).read_text()
 
+    def test_upgrade_util_is_vendored_for_binaural_migrations(self):
+        root = ROOT / "upgrade_util"
+        self.assertTrue((root / "util" / "__init__.py").is_file())
+        self.assertIn("47e6df5364cfe59d32f14e5457fa6fc50952155e", (root / "PIN.md").read_text())
+
     def test_accountant_community_closure(self):
         manifest = ast.literal_eval(
             self.source("l10n_ve_accountant/__manifest__.py")
