@@ -76,7 +76,7 @@
     <menuitem
         id="menu_l10n_ve_mf_reports"
         name="Reportes Maquina Fiscal"
-        parent="l10n_ve_accountant.account_report_detail_sale_menu"
+        parent="account.menu_finance_reports"
         action="action_l10n_ve_mf_reports_wizard"
         sequence="20"
     />

@@ -72,6 +72,10 @@ class MinimalPatchStackTest(unittest.TestCase):
         assert z is not None and reprint is not None
         self.assertEqual(z.get("groups"), "base.group_system")
         self.assertIsNone(reprint.get("groups"))
+        menu = view.find(".//menuitem[@id='menu_l10n_ve_mf_reports']")
+        assert menu is not None
+        # A child would turn the "Detalle de ventas" action into a non-clickable header.
+        self.assertEqual(menu.get("parent"), "account.menu_finance_reports")
 
     def test_sale_note_line_loop_fix_is_upstreamed(self):
         source = self.source("l10n_ve_sale/models/sale_order.py")
