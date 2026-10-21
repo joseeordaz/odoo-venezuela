@@ -16,7 +16,7 @@
                     </div>
                     <group>
                         <widget name="mf-reports-webserial-button" action="report_x"/>
-                        <widget name="mf-reports-webserial-button" action="report_z"/>
+                        <widget name="mf-reports-webserial-button" action="report_z" groups="base.group_system"/>
                     </group>
                 </group>
 
