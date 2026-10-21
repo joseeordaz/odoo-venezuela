@@ -60,6 +60,19 @@ class MinimalPatchStackTest(unittest.TestCase):
             source,
         )
 
+    def test_account_mf_never_holds_the_fiscal_port_unasked(self):
+        systray = self.source("l10n_ve_account_mf/static/src/backend/mf_systray.js")
+        mounted = systray.split("onMounted(() => {", 1)[1].split("});", 1)[0]
+        self.assertNotIn("_autoConnect()", mounted)
+        button = self.source("l10n_ve_account_mf/static/src/backend/mf_reports_webserial_button.js")
+        self.assertIn("await getBackendFiscalPrinter().disconnect();", button.split("} finally {")[-1])
+        view = ET.fromstring(self.source("l10n_ve_account_mf/wizards/mf_reports_wizard_views.xml"))
+        z = view.find(".//widget[@action='report_z']")
+        reprint = view.find(".//widget[@action='reprint_range']")
+        assert z is not None and reprint is not None
+        self.assertEqual(z.get("groups"), "base.group_system")
+        self.assertIsNone(reprint.get("groups"))
+
     def test_sale_note_line_loop_fix_is_upstreamed(self):
         source = self.source("l10n_ve_sale/models/sale_order.py")
         self.assertIn("lambda line: not line.display_type", source)

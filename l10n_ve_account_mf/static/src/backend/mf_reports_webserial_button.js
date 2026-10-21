@@ -327,6 +327,12 @@ export class MfReportsWebSerialButtonComponent extends Component {
             console.error("MfReportsWebSerialButton:: Error", error);
             this.notify(this.errorMessage(error), "danger", true);
         } finally {
+            // HOLA: liberar el puerto exclusivo para que el POS de esta PC lo recupere.
+            try {
+                await getBackendFiscalPrinter().disconnect();
+            } catch (error) {
+                console.warn("MfReportsWebSerialButton:: no se pudo liberar el puerto", error);
+            }
             this.state.busy = false;
         }
     }

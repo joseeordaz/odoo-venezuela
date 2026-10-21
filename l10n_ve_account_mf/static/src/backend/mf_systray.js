@@ -33,7 +33,9 @@ export class MfConnectionSystray extends Component {
         this._pollId = null;
 
         onMounted(() => {
-            this._autoConnect();
+            // HOLA: sin auto-conexión al cargar. El puerto Web Serial es exclusivo:
+            // una pestaña del backend lo tomaría y dejaría al POS de esa PC sin MF.
+            // La conexión ocurre solo al pulsar el ícono o un botón fiscal.
             // Mantener el badge sincronizado si otro componente conecta/desconecta
             this._pollId = setInterval(() => this._refreshFromDriver(), 5000);
         });
