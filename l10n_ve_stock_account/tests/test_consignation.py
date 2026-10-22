@@ -140,6 +140,13 @@ class TestConsignationSaleOrder(TransactionCase):
             "currency_id": cls.currency_vef.id,
             "foreign_currency_id": cls.currency_usd.id,
         })
+        # l10n_ve_rate raises when no rate exists; a fresh DB has none.
+        cls.env["res.currency.rate"].create({
+            "currency_id": cls.currency_usd.id,
+            "company_id": cls.company.id,
+            "name": "2020-01-01",
+            "inverse_company_rate": 36.0,
+        })
 
         cls.partner = cls.env["res.partner"].create({
             "name": "Consignation Customer",
