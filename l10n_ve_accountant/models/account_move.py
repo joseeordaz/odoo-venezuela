@@ -6,7 +6,7 @@ from lxml import etree
 from contextlib import ExitStack, contextmanager
 from odoo import _, api, fields, models,Command
 from odoo.exceptions import UserError, ValidationError
-from odoo.tools import float_compare, index_exists
+from odoo.tools import float_compare, format_date, index_exists
 from odoo.tools.sql import drop_index
 from odoo.tools.float_utils import float_round, float_is_zero
 from odoo.tools.misc import formatLang
@@ -530,7 +530,7 @@ class AccountMove(models.Model):
                 subtotal = line_sign * abs(line.balance)
                 tax_amount = line_sign * abs(tax_amount_by_line_id.get(line.id, 0.0))
 
-                discount_percent = line.discount or 0.0
+                discount_percent = line._get_effective_discount_percent()
                 discount_type = 'percent'
                 denominator = line.quantity * (1 - discount_percent / 100.0)
                 price_unit = (
@@ -577,6 +577,29 @@ class AccountMove(models.Model):
             if move.invoice_date_display and move.is_sale_document(include_receipts=True):
                 move.invoice_date = move.invoice_date_display
 
+
+    def _l10n_ve_check_note_date(self, note_date):
+        """A Credit/Debit Note is the same transaction as its origin, so its
+        document date (`invoice_date_display`) must fall between the
+        origin's own document date and today. `self` are the origin
+        documents the note is issued against."""
+        today = fields.Date.context_today(self)
+        for origin in self.filtered(lambda m: m.is_invoice(include_receipts=True)):
+            origin_date = origin.invoice_date_display or origin.date
+            if note_date > today:
+                raise ValidationError(_(
+                    "The note date (%(value)s) cannot be later than today (%(today)s).",
+                    value=format_date(self.env, note_date),
+                    today=format_date(self.env, today),
+                ))
+            if origin_date and note_date < origin_date:
+                raise ValidationError(_(
+                    "The note date (%(value)s) cannot be earlier than the date "
+                    "of the original document %(origin)s (%(origin_date)s).",
+                    value=format_date(self.env, note_date),
+                    origin=origin.display_name,
+                    origin_date=format_date(self.env, origin_date),
+                ))
 
     @api.model
     def search_read(self, domain=None, fields=None, offset=0, limit=None, order=None):
@@ -670,7 +693,7 @@ class AccountMove(models.Model):
 
             for line in record.invoice_line_ids:
                 subtotal = line.price_unit * line.quantity
-                if line.discount > 0:
+                if line._get_effective_discount_percent() > 0:
                     discount_amount += subtotal - line.price_subtotal
                 total += subtotal
 
@@ -725,7 +748,6 @@ class AccountMove(models.Model):
             foreign_currency_record = self.env["res.currency"].search(
                 [("id", "=", int(foreign_currency_id))]
             )
-            foreign_currency_symbol = foreign_currency_record.symbol or ""
             foreign_currency_name = foreign_currency_record.name or ""
             company_currency_symbol = self.env.company.currency_id.symbol or ""
             if view_type == "form":
@@ -733,17 +755,12 @@ class AccountMove(models.Model):
                     "l10n_ve_accountant.view_account_move_form_l10n_ve_accountant"
                 ).id
                 doc = etree.XML(res["arch"])
-                page = doc.xpath("//page[@name='foreign_currency']")
                 foreign_subtotal_line = doc.xpath("//page[@id='invoice_tab'][1]/field[1]/list[1]/field[@name='foreign_subtotal']")
                 foreign_price_line = doc.xpath("//page[@id='invoice_tab'][1]/field[1]/list[1]/field[@name='foreign_price']")
                 if foreign_subtotal_line:
                     foreign_subtotal_line[0].set("string", _("Subtotal") + " " + foreign_currency_name)
                 if foreign_price_line:
                     foreign_price_line[0].set("string", _("Price") + " " + foreign_currency_name)
-                if page:
-                    page[0].set(
-                        "string", _("Foreign Currency ") + " " + foreign_currency_symbol
-                    )
                 res["arch"] = etree.tostring(doc, encoding="unicode")
 
             if view_type == "list":
@@ -828,6 +845,13 @@ class AccountMove(models.Model):
                 )
 
         return res
+
+    def button_update_prices_from_pricelist(self):
+        """The button applies the pricelist to every line, including the manual
+        prices that _compute_price_unit protects (task 84438)."""
+        return super(
+            AccountMove, self.with_context(force_price_recomputation=True)
+        ).button_update_prices_from_pricelist()
 
     @api.constrains("invoice_line_ids")
     def _check_taxes_id(self):
@@ -1390,6 +1414,17 @@ class AccountMove(models.Model):
             return False
         return self.move_type in ("out_invoice", "out_receipt")
 
+    def _check_draftable(self):
+        """Alternate currency exchange difference entries (native or
+        standalone) work like Odoo's own exchange difference entry: they can
+        never be reset to draft. This guard was missing from the original
+        implementation: by their nature (generated by the reconciliation, not
+        typed by the user) breaking the reconciliation is what reverses them,
+        not a manual draft."""
+        if self.filtered('l10n_ve_exchange_foreign_diff_entry'):
+            raise UserError(_('You cannot reset to draft an alternate currency exchange difference journal entry.'))
+        return super()._check_draftable()
+
     def action_post(self):
         if not self.env.context.get("move_action_post_alert"):
             for move in self:
@@ -1616,6 +1651,13 @@ class AccountMove(models.Model):
             rate=rate,
         )
 # Unbalanced Lines Synchronization
+    @api.model
+    def _get_base_line_sync_extra_fields(self):
+        """Invoice line fields whose change forces `_sync_tax_lines` to
+        resynchronize the journal items. Extend it from other modules that
+        alter the line amounts through a field of their own."""
+        return ['price_unit', 'quantity', 'discount']
+
     @contextmanager
     def _sync_tax_lines(self, container):
         AccountTax = self.env['account.tax']
@@ -1636,7 +1678,14 @@ class AccountMove(models.Model):
         def get_base_line_tracked_fields(line):
             grouping_key = AccountTax._prepare_base_line_grouping_key(fake_base_line)
             if line.move_id.is_invoice(include_receipts=True):
-                extra_fields = ['price_unit', 'quantity', 'discount']
+                extra_fields = self._get_base_line_sync_extra_fields()
+                # discount_fixed (l10n_ve_invoice, opcional -- este modulo no
+                # depende de ese) tambien cambia la base de la linea y debe
+                # disparar el re-balanceo igual que discount (%); sin esto,
+                # escribirlo solo no refresca balance/amount_currency y
+                # quedan desincronizados de price_subtotal.
+                if 'discount_fixed' in line._fields:
+                    extra_fields.append('discount_fixed')
             else:
                 extra_fields = ['amount_currency']
             return list(grouping_key.keys()) + extra_fields
@@ -2139,6 +2188,7 @@ class AccountMove(models.Model):
                     pt.write({
                         'foreign_debit': new_fd,
                         'foreign_credit': new_fc,
+                        'foreign_balance': new_fd - new_fc,
                         'not_foreign_recalculate': True,
                     })
 
@@ -2305,6 +2355,9 @@ class AccountMove(models.Model):
         """
         self.ensure_one()
         res = super()._get_all_reconciled_invoice_partials()
+        origin_id = self._origin.id
+        if not origin_id:
+            return res
 
         # No `sudo()`: whoever can reach this (viewing the invoice's
         # "Pagos" widget) already has read access to it, and core's own
@@ -2313,7 +2366,7 @@ class AccountMove(models.Model):
         # blanket read access to every journal entry in that same company
         # -- there is no narrower ACL this would be bypassing.
         standalone_entries = self.env['account.move'].search([
-            ('l10n_ve_exchange_foreign_source_move_id', '=', self.id),
+            ('l10n_ve_exchange_foreign_source_move_id', '=', origin_id),
             ('state', '=', 'posted'),
             # A reversed entry stays `posted` by design (see
             # `account_partial_reconcile.py`, "reversed, not cancelled")
