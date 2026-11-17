@@ -149,6 +149,21 @@ class MinimalPatchStackTest(unittest.TestCase):
                 self.assertEqual(qweb(label.get("t-out"), o), symbol)
                 self.assertEqual(qweb(rounded_label.get("t-out"), o), company_code)
 
+    def test_invoice_details_report_avoids_pre_19_tax_totals_keys(self):
+        # Odoo 19 renamed tax_totals keys; the old ones made "Detalle de ventas" crash on any posted invoice.
+        for path in (
+            "l10n_ve_accountant/report/account_invoice_details_report.py",
+            "l10n_ve_accountant/report/account_invoice_details.xml",
+        ):
+            source = self.source(path)
+            self.assertNotIn("amount_total\"]", source, path)
+            self.assertNotIn("amount_total']", source, path)
+        self.assertNotIn("datetime.today()", self.source("l10n_ve_accountant/wizard/invoices_details.py"))
+        compute = self.source("l10n_ve_accountant/models/account_move.py").split("def _compute_detailed_amounts", 1)[1].split("\n    def ", 1)[0]
+        self.assertNotIn("tax_totals.get(", compute)
+        self.assertNotIn("return", compute)
+        self.assertNotIn("self.currency_id", compute)
+
 
 if __name__ == "__main__":
     unittest.main()
