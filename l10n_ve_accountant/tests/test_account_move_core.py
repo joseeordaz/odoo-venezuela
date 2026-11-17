@@ -369,6 +369,8 @@ class TestAccountMoveCore(TransactionCase):
         self.assertIn('formatted_taxes_amount', details)
         self.assertIn('gross_discount_amount', details)
         self.assertIn('formatted_gross_discount_amount', details)
+        self.assertGreater(invoice.amount_tax, 0)
+        self.assertAlmostEqual(details['taxes_amount'], invoice.amount_tax)
 
     # ═══════════════════════════════════════════════════════════════
     # _inverse_foreign_balance (account.move.line)
