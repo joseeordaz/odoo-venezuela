@@ -1,6 +1,7 @@
 from odoo.tests import TransactionCase, tagged, Form
 from odoo import Command, fields
 from odoo.exceptions import UserError, ValidationError
+from .usd_rate import ensure_usd_rate
 import logging, random
 
 _logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ class TestRetentionLineComputation(TransactionCase):
             "foreign_currency_id": cls.currency_usd.id,
             "country_id": 28,
         })
+        ensure_usd_rate(cls.env, cls.company)
 
         def get_or_create_account(code, ttype, name, recon=False):
             account = cls.env["account.account"].search([("code", "=", code)], limit=1)
