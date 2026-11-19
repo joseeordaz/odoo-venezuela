@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Adapta el Punto de Venta de Odoo 19 a la operación venezolana: tasa operativa de la caja tomada de `l10n_ve_rate`, manejo dual de montos (moneda principal y moneda alterna) en órdenes, pagos, asientos y reportes, facturación obligatoria de toda orden (SENIAT), reembolsos a la tasa histórica, movimientos de compensación (cross moves) para métodos de pago en divisa, carga de cadenas de listas de precios, formulario reducido de contacto para el cajero y permisos de caja. Extiende `pos.config`, `pos.session`, `pos.order`, `pos.order.line`, `pos.payment`, `pos.payment.method`, `account.move`, `account.partial.reconcile`, `account.tax`, `res.company`, `res.config.settings`, `res.currency`, `res.partner`, `res.users`, `stock.picking`, `product.product`, `product.category` y `product.pricelist`, e incluye un frontend OWL extenso bajo `static/src` empaquetado en `point_of_sale._assets_pos`. Depende de `point_of_sale`, `l10n_ve_rate`, `l10n_ve_contact`, `l10n_ve_stock`, `l10n_ve_location` y `l10n_ve_accountant`.
+Adapta el Punto de Venta de Odoo 19 a la operación venezolana: tasa operativa de la caja tomada de `l10n_ve_rate`, manejo dual de montos (moneda principal y moneda alterna) en órdenes, pagos, asientos y reportes, facturación obligatoria de toda orden (SENIAT), reembolsos a la tasa histórica, movimientos de compensación (cross moves) para métodos de pago en divisa, carga de cadenas de listas de precios, formulario reducido de contacto para el cajero y permisos de caja. Extiende `pos.config`, `pos.session`, `pos.order`, `pos.order.line`, `pos.payment`, `pos.payment.method`, `account.move`, `account.partial.reconcile`, `account.tax`, `res.company`, `res.config.settings`, `res.currency`, `res.partner`, `res.users`, `stock.picking`, `product.product`, `product.category`, `product.pricelist` y `pos.load.mixin`, e incluye un frontend OWL extenso bajo `static/src` empaquetado en `point_of_sale._assets_pos`. Depende de `point_of_sale`, `l10n_ve_rate`, `l10n_ve_contact`, `l10n_ve_stock`, `l10n_ve_location` y `l10n_ve_accountant`. El Kiosko y el autopedido móvil los ajusta `l10n_ve_pos_self_order`, con su propia spec en `l10n_ve_pos_self_order/openspec/specs` ("Mostrar solamente los productos disponibles" en `pos-self-order-kiosk-available-products`).
 
 ## Requirements
 
@@ -26,7 +26,7 @@ El sistema DEBE (MUST) impedir abrir la interfaz del PdV (`pos.config._action_to
 
 ### Requirement: Conversión centralizada con tasa completa y redondeo solo del resultado
 
-La conversión entre moneda principal y alterna del PdV DEBE (MUST) hacerse multiplicando el monto por la tasa cruda sin redondear y redondeando únicamente el resultado con `to_currency.round()`. Para principal → alterna se usa `foreign_inverse_rate`; para alterna → principal se usa `foreign_rate`; misma moneda devuelve el monto (redondeado si se pide); sin tasa disponible devuelve `0.0`. Este contrato está implementado en espejo en `pos.config._convert` (backend) y en `PosOrder._convert` del frontend (`static/src/overrides/models/pos_order.js`).
+La conversión del PdV DEBE (MUST) multiplicar el monto por la tasa cruda sin redondear y redondear solo el resultado con `to_currency.round()`: principal → alterna con `foreign_inverse_rate`, alterna → principal con `foreign_rate` y, con una moneda de cobro, las tasas de `tender_currency_rates`. Misma moneda devuelve el monto; sin tasa, `0.0`. El contrato está en espejo en `pos.config._convert` y en `PosOrder._convert` del frontend.
 
 #### Scenario: Conversión de bolívares a divisa
 
@@ -35,13 +35,18 @@ La conversión entre moneda principal y alterna del PdV DEBE (MUST) hacerse mult
 
 #### Scenario: Sin tasa configurada
 
-- **WHEN** ninguna de las dos monedas involucradas es la moneda alterna, o la tasa operativa es cero
+- **WHEN** ninguna de las dos monedas involucradas es la alterna ni una moneda de cobro de la caja, o la tasa operativa es cero
 - **THEN** la conversión devuelve `0.0` (y el frontend registra una advertencia en consola una sola vez)
 
 #### Scenario: Caja sin tasa del día
 
 - **WHEN** `pos.config._compute_rate` se calcula un día sin tasa cargada para la moneda alterna
 - **THEN** llama a `compute_rate` con `raise_if_not_found=False` y no lanza error (la configuración de la caja sigue accesible, aunque `l10n_ve_rate.compute_rate` lance `UserError` por defecto)
+
+#### Scenario: Bolívares y una moneda de cobro
+
+- **WHEN** se convierte entre la moneda principal y una moneda de cobro de los métodos de la caja con tasa del día
+- **THEN** la conversión no da `0.0`: usa la tasa de esa moneda en `tender_currency_rates`
 
 ### Requirement: Facturación obligatoria de toda orden del PdV
 
@@ -230,23 +235,36 @@ Durante el cierre de sesión, el sistema DEBE (MUST) acumular `foreign_amount` d
 
 ### Requirement: Cross moves de compensación para métodos en divisa
 
-Al cerrar la sesión (`action_pos_session_close` → `_validate_cross_move`), por cada método de pago que pase `_is_cross_move_eligible` —`is_foreign_currency`, tipo distinto de `pay_later`, `cross_account_journal` y `cross_journal` presentes Y una cuenta transitoria resoluble— el sistema DEBE (MUST) crear en `cross_account_journal` asientos EN BORRADOR (`state="draft"`) que trasladan el saldo de la cuenta transitoria del método hacia la cuenta real del `cross_journal`, con `foreign_debit`/`foreign_credit`, `not_foreign_recalculate = True`, la tasa del pago (`foreign_rate`, también en el encabezado junto con `foreign_currency_id`) y una referencia (`ref`) que identifica sesión/orden/pago; el número secuencial (`name`) se deja vacío para que lo asigne el diario al contabilizar. Un método sin alguno de los dos diarios se omite en silencio (change `l10n-ve-pos-cross-move-accounts-check` de `l10n_ve_pos`: la sesión no abre si al cruce le faltan sus cuentas; en el cierre, una transitoria que falte omite el cruce con un aviso en el log y una cuenta de las líneas de pago que falte da un error legible).
-
-La cuenta transitoria la resuelve `_get_cross_transitory_account`: para `cash`, `journal_id.default_account_id`; para el resto, `outstanding_account_id` o, si está vacía, `journal_id.default_account_id`; y como último recurso, en ambos casos, `company_id.account_default_pos_receivable_account_id`. La cuenta real la resuelve `_get_cross_real_account` con la `payment_account_id` de las líneas de método de pago entrantes o salientes del `cross_journal` según el signo. Existe además una variante `use_suspense=True` (usada desde fuera, p. ej. `binaural_pos_close` para cash in/out) que drena `journal_id.suspense_account_id` hacia `cross_journal.suspense_account_id` invirtiendo el sentido del asiento.
+Al cerrar la sesión (`_validate_cross_move`), por cada método que pase `_is_cross_move_eligible` (`is_foreign_currency` o una moneda de cobro, tipo distinto de `pay_later`, sus dos diarios de cruce y una transitoria resoluble), el sistema DEBE (MUST) crear en `cross_account_journal` asientos en borrador que pasan el saldo de la transitoria del método a la cuenta real del `cross_journal`, con `foreign_debit`/`foreign_credit`, `not_foreign_recalculate` y una `ref` de sesión, orden o pago.
 
 #### Scenario: Método en divisa completo
 
 - **WHEN** se cierra una sesión con pagos de un método `is_foreign_currency` con ambos diarios configurados
-- **THEN** se crean asientos borrador en `cross_account_journal` que acreditan la cuenta transitoria y debitan la cuenta real del `cross_journal` (o a la inversa para montos negativos)
+- **THEN** se crean asientos borrador en `cross_account_journal` que acreditan la cuenta transitoria y debitan la cuenta real del `cross_journal` (o a la inversa para montos negativos), con la tasa del pago y `foreign_currency_id` también en el encabezado, sin `name`: lo asigna el diario al contabilizar
 
 #### Scenario: Configuración incompleta
 
 - **WHEN** al método le falta `cross_account_journal` o `cross_journal`
-- **THEN** no se crea ningún cross move para ese método y el cierre no falla
+- **THEN** no se crea ningún cross move para ese método y el cierre no falla (un método con moneda de cobro no se puede guardar así)
+
+#### Scenario: Cuentas faltantes
+
+- **WHEN** a un método con sus dos diarios le falta alguna cuenta que usa su cruce
+- **THEN** la sesión no abre (change `l10n-ve-pos-cross-move-accounts-check`); en una sesión abierta antes, al cerrar, una transitoria que falte omite el cruce con un aviso en el log y una cuenta de las líneas de pago que falte da un error legible
+
+#### Scenario: Cuentas del cruce
+
+- **WHEN** se arma el cruce de un método
+- **THEN** la transitoria es la que resuelve `_get_cross_transitory_account` (efectivo: `journal_id.default_account_id`; el resto: `outstanding_account_id` o la del diario; en ambos, como último recurso, la cuenta por cobrar del PdV de la compañía) y la real la `payment_account_id` de las líneas de pago entrantes o salientes del `cross_journal`, según el signo; con `use_suspense=True` el asiento va entre las cuentas transitorias de los dos diarios, con el sentido invertido
+
+#### Scenario: Método con moneda de cobro
+
+- **WHEN** se cierra una sesión con pagos de un método con moneda de cobro y sus dos diarios
+- **THEN** su cruce se crea como el de un método en divisa y la línea del diario real lleva como `amount_currency` lo cobrado en esa moneda
 
 ### Requirement: Granularidad del cross move según split_transactions
 
-La granularidad de los cross moves DEBE (MUST) seguir el flag nativo `split_transactions` del método: con `split_transactions` verdadero se crea un asiento por cada `pos.payment` (referenciando orden y pago); con falso, un único asiento por método y sesión con el neto de todos sus pagos, sin crear nada si el neto es cero. Si el partner de un pago pertenece a otra compañía, se omite del encabezado del asiento (las líneas lo conservan).
+La granularidad de los cross moves DEBE (MUST) seguir el flag nativo `split_transactions` del método: verdadero, un asiento por cada `pos.payment` (con su orden y pago en la referencia); falso, un único asiento por método y sesión con una pata de entradas y otra de salidas, cada una con el neto de sus pagos, y ninguno si los netos en la caja, la alterna y la moneda de cobro son todos cero. Si el partner de un pago es de otra compañía, se omite del encabezado.
 
 #### Scenario: Método identificando cliente
 
@@ -255,8 +273,28 @@ La granularidad de los cross moves DEBE (MUST) seguir el flag nativo `split_tran
 
 #### Scenario: Neto cero combinado
 
-- **WHEN** el método no divide transacciones y las ventas y devoluciones del método se anulan entre sí
+- **WHEN** el método no divide transacciones y las ventas y devoluciones del método se anulan entre sí en la caja, en la alterna y en la moneda de cobro
 - **THEN** no se crea ningún asiento para ese método
+
+#### Scenario: Venta y devolución en divisa a tasas distintas
+
+- **WHEN** el método no divide transacciones y la sesión tiene una venta de 40 a 50 por unidad y una devolución de 60 a 10 (neto −20 en la caja y +1.400 en la alterna)
+- **THEN** se crea un asiento con dos pares de líneas, la venta y la devolución, cada línea con saldo y `amount_currency` del mismo signo, y el diario real recibe −20 y +1.400
+
+#### Scenario: Venta y reembolso en euros a tasas distintas
+
+- **WHEN** el método en EUR no divide transacciones y la sesión tiene una venta de 20 € por 1.000 Bs y un reembolso de 25 € por 750 Bs
+- **THEN** se crea un asiento con dos pares de líneas y la caja real en EUR recibe −250 Bs con +5 € en `amount_currency`, sin que el cierre choque con `account_move_line_check_amount_currency_balance_sign`
+
+#### Scenario: Neto cero en la caja con divisas de diferencia
+
+- **WHEN** las ventas y reembolsos del método suman cero en la caja pero no en la alterna o en euros
+- **THEN** se crea el asiento y la diferencia en esa moneda pasa al diario real
+
+#### Scenario: Tasa de cada pata
+
+- **WHEN** el reembolso de la sesión se valoró a la tasa de su venta original y la venta a la del día
+- **THEN** las líneas de cada pata se arman con la tasa de sus pagos; es informativa, porque la línea guardada toma la del asiento y sus montos alternos son los de sus pagos
 
 ### Requirement: Reescritura de totales de las órdenes al cerrar la sesión
 
@@ -321,12 +359,17 @@ La carga de listas de precios al PdV (`product.pricelist._load_pos_data_domain`)
 
 ### Requirement: Monedas cargadas al PdV restringidas y ordenadas
 
-El loader de `res.currency` DEBE (MUST) restringir las monedas enviadas al PdV a la moneda de la compañía, la moneda de la caja y la moneda alterna (`_load_pos_data_domain`), exponer `inverse_rate` entre los campos y devolver la lista con la moneda de la compañía en primera posición (`_load_pos_data_read`).
+El loader de `res.currency` DEBE (MUST) restringir las monedas enviadas al PdV a la moneda de la compañía, la de la caja, la alterna y las monedas de cobro de sus métodos (`_load_pos_data_domain`), exponer `inverse_rate` entre los campos y devolver la lista con la moneda de la compañía en primera posición (`_load_pos_data_read`).
 
 #### Scenario: Compañía con moneda alterna
 
 - **WHEN** se abre una caja de una compañía con moneda alterna configurada
 - **THEN** al frontend llegan únicamente esas monedas, con la de la compañía primero
+
+#### Scenario: Caja con un método en una moneda de cobro
+
+- **WHEN** la caja tiene un método con moneda de cobro EUR
+- **THEN** el EUR también llega al frontend, después de la moneda de la compañía
 
 ### Requirement: Permisos para cambiar cantidad y precio en la caja
 
@@ -344,12 +387,42 @@ El módulo DEBE (MUST) restringir los botones de cantidad y precio del numpad a 
 
 ### Requirement: Visibilidad y orden de productos según disponibilidad
 
-Con el flag de compañía `pos_show_just_products_with_available_qty` activo, el sistema DEBE (MUST) ordenar el catálogo cargado al PdV por `qty_available` descendente (`_sort_available_products`) y el frontend excluir de `productsToDisplay` los productos cuyo tipo no es `service` ni `consu` y cuya `qty_available` no es positiva. El loader de productos expone `free_qty` y `qty_available` calculados con el almacén del tipo de operación de la caja.
+Con el flag de compañía `pos_show_just_products_with_available_qty` activo, el sistema DEBE (MUST) ordenar el `product.product` cargado al PdV por `qty_available` descendente, y la cuadrícula del PdV, también al buscar, NO DEBE (MUST NOT) mostrar los almacenables sin ninguna variante con `qty_available` positiva (`ProductTemplate.canBeDisplayed`). Lo no almacenable se muestra siempre. `qty_available` se calcula en la ubicación de origen de la caja y sus hijas, la que valida "Cantidad en 0".
 
 #### Scenario: Flag activo
 
 - **WHEN** la compañía activa el flag y se abre la caja
-- **THEN** los productos llegan ordenados por disponibilidad descendente, computada contra el almacén de la caja
+- **THEN** los productos llegan ordenados por disponibilidad descendente, computada contra la ubicación de origen de la caja
+
+#### Scenario: Flag activo y almacenable sin stock en la ubicación de origen de la caja
+
+- **WHEN** la compañía activa el flag y un producto almacenable disponible en el PdV tiene stock a mano 0 o negativo en la ubicación de origen de la caja
+- **THEN** el producto no aparece en la cuadrícula ni en la búsqueda del PdV
+
+#### Scenario: Stock solo en otro almacén
+
+- **WHEN** el flag está activo y el producto tiene stock en otro almacén de la compañía pero no en el de la caja
+- **THEN** el PdV recibe `qty_available` 0 para ese producto y no lo muestra
+
+#### Scenario: Stock en otra ubicación del almacén de la caja
+
+- **WHEN** el flag está activo y el producto tiene stock en una ubicación del almacén de la caja que no es la de origen ni hija de ella
+- **THEN** el PdV recibe `qty_available` 0 para ese producto y no lo muestra, igual que "Cantidad en 0" no lo dejaría vender
+
+#### Scenario: Alguna variante con stock
+
+- **WHEN** el flag está activo y al menos una variante del producto tiene stock a mano positivo en la ubicación de origen de la caja
+- **THEN** el producto aparece en la cuadrícula
+
+#### Scenario: Producto no almacenable
+
+- **WHEN** el flag está activo y el producto es un servicio, un consumible sin control de stock o un combo
+- **THEN** el producto aparece aunque no tenga stock
+
+#### Scenario: Flag apagado
+
+- **WHEN** la compañía no activa el flag
+- **THEN** los productos almacenables sin stock aparecen en la cuadrícula y el bloqueo de vender sin stock depende de "Cantidad en 0" (`amount_to_zero`)
 
 ### Requirement: Existencia disponible en la tarjeta de producto
 
@@ -371,6 +444,8 @@ El controlador DEBE (MUST) exponer las rutas JSON `/validate_products_order` y `
 
 Es decir, `sell_kit_from_another_store` exime únicamente los productos ausentes del almacén de la caja; nunca el stock insuficiente.
 
+En O19 ningún JS del PdV llama estas rutas (son código heredado de O17). El bloqueo por stock antes del pago con "Cantidad en 0" lo hace `pos.config.check_stock_availability` (ver el requirement «"Cantidad en 0" bloquea el pago sin stock a mano»), con otra semántica: stock a mano de la ubicación origen de la caja, sin kits de otra tienda.
+
 #### Scenario: Stock insuficiente en el almacén de la caja
 
 - **WHEN** se llama `/validate_products_in_warehouse` con una cantidad mayor a la disponible en el almacén del picking type, con `sell_kit_from_another_store` verdadero
@@ -380,6 +455,35 @@ Es decir, `sell_kit_from_another_store` exime únicamente los productos ausentes
 
 - **WHEN** el producto no tiene quants en el almacén del picking type y se pasa `sell_kit_from_another_store` verdadero
 - **THEN** la respuesta vuelve con `msg_error` en `False` y la venta se permite
+
+### Requirement: "Cantidad en 0" bloquea el pago sin stock a mano
+
+Con `amount_to_zero` activo en la caja, al pulsar "Pago" (o al validar con el pago rápido) el PdV DEBE (MUST) comparar la cantidad pedida por producto almacenable (suma de líneas positivas) contra el stock a mano de la ubicación origen de la caja (`pos.config.check_stock_availability`) y, si alguna la supera, mostrar "Stock insuficiente" con el detalle y no pasar a la pantalla de pago. Lo reservado por otras órdenes no reduce el stock a comparar.
+
+#### Scenario: Stock a mano suficiente aunque esté reservado por otra orden
+
+- **WHEN** hay 8 a mano, otra orden confirmada reservó 7 y la orden del PdV lleva 7
+- **THEN** el PdV pasa a la pantalla de pago
+
+#### Scenario: Stock a mano insuficiente
+
+- **WHEN** hay 1 a mano y la orden del PdV lleva 7
+- **THEN** se muestra "Stock insuficiente" con "pedido 7, a mano 1" y no se abre la pantalla de pago ni se imprime en la MF
+
+#### Scenario: Check apagado o producto no almacenable
+
+- **WHEN** la caja no tiene `amount_to_zero`, o el producto es servicio/consumible no almacenable
+- **THEN** no se valida stock
+
+#### Scenario: Pago rápido
+
+- **WHEN** la caja usa el pago rápido y la orden lleva más de lo que hay a mano
+- **THEN** se muestra "Stock insuficiente" y la orden no se valida ni se imprime en la MF
+
+#### Scenario: Producto que ya no existe
+
+- **WHEN** la orden trae el id de un producto borrado después de que la caja lo cargó
+- **THEN** ese producto se omite y el resto de la orden se valida normalmente
 
 ### Requirement: Formulario reducido de contacto exclusivo del PdV
 
@@ -491,3 +595,265 @@ El módulo DEBE (MUST) definir el grupo `l10n_ve_pos.group_authorized_discount_p
 
 - **WHEN** un administrador edita un usuario
 - **THEN** el grupo "Authorized discount pos" está disponible dentro del privilegio del Punto de Venta
+
+### Requirement: La tasa de la caja es la del día del usuario
+
+`pos.config._compute_rate` DEBE (MUST) buscar la tasa de `fields.Date.context_today` y no la de `fields.Date.today()`. Como esa búsqueda usa `raise_if_not_found=False`, usar la fecha UTC dejaba la caja con tasa `0` sin avisar después de las 8 pm de Caracas.
+
+#### Scenario: Caja consultada a las 8:30 pm en Caracas
+
+- **WHEN** se calcula la tasa de la caja a las 00:30 UTC del día siguiente y hay tasa del día del usuario
+- **THEN** `foreign_rate` toma la tasa del día del usuario y no queda en 0
+
+### Requirement: "Permitir crear productos" por caja
+
+`pos.config` DEBE (MUST) tener `allow_product_creation_in_pos` ("Permitir crear productos"), apagado por defecto y editable desde Ajustes. Apagado, el PdV DEBE (MUST) ocultar "Crear producto" del menú y "Crear manualmente" de la pantalla de productos vacía, y `PosStore.editProduct()` sin producto NO DEBE (MUST NOT) abrir el formulario. Solo un `true` explícito la enciende.
+
+#### Scenario: Creación permitida
+
+- **WHEN** la caja tiene "Permitir crear productos" encendido y el usuario tiene permiso para crear productos
+- **THEN** el menú del PdV muestra "Crear producto" y abre el formulario de producto nuevo
+
+#### Scenario: Creación apagada
+
+- **WHEN** la caja tiene "Permitir crear productos" apagado
+- **THEN** el menú no muestra "Crear producto", la pantalla de productos vacía no muestra "Crear manualmente" y `editProduct()` sin producto no abre nada
+
+#### Scenario: Editar un producto existente con la creación apagada
+
+- **WHEN** la caja tiene "Permitir crear productos" apagado y el cajero edita un producto existente
+- **THEN** se abre el formulario de edición como siempre
+
+#### Scenario: Caja cargada antes de actualizar el módulo
+
+- **WHEN** el PdV trae `pos.config` de su caché sin el campo (`undefined`)
+- **THEN** la creación se trata como no permitida
+
+#### Scenario: Cajas existentes al actualizar
+
+- **WHEN** se actualiza `l10n_ve_pos` en una base con cajas creadas antes
+- **THEN** todas quedan con "Permitir crear productos" apagado hasta que se encienda en Ajustes
+
+### Requirement: Stock actual al abrir la caja con "Mostrar solamente los productos disponibles"
+
+Con el flag activo, `pos.session.load_data` DEBE (MUST) cargar `product.template` y `product.product` sin el filtro por `write_date` de la carga incremental, porque un movimiento de stock no lo cambia: una sesión nueva o la entrada desde el backend traen el stock actual aunque la caja tenga caché. F5 con la sesión abierta no consulta al servidor: para eso lo recomendado es "Volver a cargar datos" → "Limitado".
+
+#### Scenario: Stock cambiado con la caja ya cargada
+
+- **WHEN** el flag está activo, la caja cargó un producto almacenable y después su stock cambia en la ubicación de origen de la caja (se repone o se agota) sin que cambie el producto
+- **THEN** al abrir una sesión nueva o entrar desde el backend el producto aparece o desaparece según el stock actual
+
+#### Scenario: F5 con la sesión abierta
+
+- **WHEN** el flag está activo, la sesión sigue abierta y se repone el stock de un producto oculto
+- **THEN** tras F5 sigue oculto, y aparece tras "Volver a cargar datos" → "Limitado", que vacía la caché del navegador igual que "Completo" y recarga hasta `point_of_sale.limited_product_count` plantillas
+
+#### Scenario: Flag apagado
+
+- **WHEN** la compañía no activa el flag y la caja abre con caché
+- **THEN** la carga incremental conserva el filtro por `write_date` del core y solo reenvía los productos modificados
+
+### Requirement: El cross move se fecha en el día del usuario
+
+`_create_cross_move` DEBE (MUST) fechar el asiento en el día del usuario (`fields.Date.context_today`) cuando recibe un Datetime en UTC (`stop_at` de la sesión o `create_date` del pago), y no truncarlo al día UTC. Desde las 8 pm de Caracas el día UTC ya es el siguiente, todavía sin tasa, y `l10n_ve_accountant` detenía el cierre de la sesión.
+
+#### Scenario: Cierre a las 8:30 pm de Caracas con un método que no identifica cliente
+
+- **WHEN** la sesión se cierra con `stop_at` a las 00:30 UTC del día siguiente y solo hay tasa del día del usuario
+- **THEN** el cross move del método se crea con la fecha del día del usuario, sin pedir la tasa del día UTC
+
+#### Scenario: Pago registrado a las 8:30 pm de Caracas con un método que identifica cliente
+
+- **WHEN** el pago se registró a las 00:30 UTC del día siguiente y solo hay tasa del día del usuario
+- **THEN** el cross move de ese pago se crea con la fecha del día del usuario
+
+### Requirement: Método de pago en una tercera moneda de cobro
+
+Un método de pago DEBE (MUST) poder declararse en una tercera moneda de cobro (`tender_currency_id`), distinta de la moneda de la compañía. No DEBE (MUST) combinarse con `is_foreign_currency` ni con un método de crédito y DEBE (MUST) tener sus dos diarios de cruce, el real en esa moneda. Lo que depende de la caja lo DEBE (MUST) validar cada caja del método (`pos.config._get_tender_currency_error`): aquí, solo una caja en la moneda de la compañía y sin la alterna.
+
+#### Scenario: Moneda de cobro igual a la de la compañía o a la alterna
+
+- **WHEN** se le pone a un método como moneda de cobro la moneda de la compañía, o se agrega a una caja en la moneda de la compañía un método con la alterna como moneda de cobro
+- **THEN** se rechaza con un error de validación: en esa caja la alterna se cobra con `is_foreign_currency`
+
+#### Scenario: Método sin caja con la alterna
+
+- **WHEN** se crea un método con la alterna como moneda de cobro que todavía no está en ninguna caja
+- **THEN** se acepta, y lo valida cada caja a la que se agregue
+
+#### Scenario: Método en divisa con moneda de cobro
+
+- **WHEN** un método tiene a la vez `is_foreign_currency` y una moneda de cobro
+- **THEN** se rechaza con un error de validación
+
+#### Scenario: Diario de cruce en otra moneda
+
+- **WHEN** el diario de cruce de un método con moneda de cobro no está en esa moneda
+- **THEN** se rechaza con un error de validación
+
+#### Scenario: Método sin diarios de cruce
+
+- **WHEN** a un método con moneda de cobro le falta el diario de cruce o el diario de la cuenta de cruce
+- **THEN** se rechaza con un error de validación: sin ellos el cruce se omitiría y los euros no llegarían a la caja real
+
+#### Scenario: Caja en otra moneda
+
+- **WHEN** se agrega un método con moneda de cobro a una caja cuya moneda no es la de la compañía, o se le pone la moneda de cobro a un método de esa caja, y ningún módulo extiende el gancho
+- **THEN** se rechaza con un error de validación
+
+### Requirement: Conversión con la tasa del día de la moneda de cobro
+
+El motor de conversión (`pos.config._get_pos_conversion_rate` y su espejo `_getPosConversionRate`) DEBE (MUST) convertir entre la moneda de cobro y la caja con las tasas de `tender_currency_rates` (`compute_rate` a la fecha del usuario, moneda → caja la grande y caja → moneda la chica), y entre la moneda de cobro y la alterna pasando por la caja sin redondear la tasa. Los pares sin moneda de cobro NO DEBEN (MUST NOT) cambiar. Sin tasa del día la conversión DEBE (MUST) dar 0.
+
+#### Scenario: Euros a bolívares
+
+- **WHEN** la tasa del día del EUR es 1.003,8765 Bs y se convierten 100 €
+- **THEN** el resultado es 100.387,65 Bs
+
+#### Scenario: Euros a dólares
+
+- **WHEN** se convierte de EUR a USD
+- **THEN** la tasa es la del EUR → Bs multiplicada por la de Bs → USD, sin redondear
+
+#### Scenario: Sin tasa del día
+
+- **WHEN** el EUR no tiene tasa en la fecha del usuario
+- **THEN** la conversión da 0 y el PdV no agrega la línea del método, con un aviso
+
+### Requirement: La moneda de cobro llega al PdV
+
+El PdV DEBE (MUST) cargar las monedas de cobro de sus métodos, y `res.currency` DEBE (MUST) cargarse completo en cada carga, sin el filtro por `write_date`.
+
+#### Scenario: Moneda de cobro agregada después de la última carga
+
+- **WHEN** la caja tiene datos en caché y se agrega un método en EUR
+- **THEN** la próxima carga trae el EUR
+
+### Requirement: Cobro tecleado en la moneda de cobro
+
+Al pagar con un método con moneda de cobro, el PdV DEBE (MUST) proponer lo adeudado en esa moneda y tomar lo tecleado en ella, redondeado a esa moneda. Si es justo lo propuesto, la línea DEBE (MUST) valer en la caja exactamente el restante; si es más, lo tecleado por la tasa, con el signo del restante; si es menos, la conversión de lo tecleado. El pago DEBE (MUST) guardar lo cobrado en `tender_amount` con la moneda del método, y su `foreign_amount` se deriva del monto en la caja.
+
+#### Scenario: Pago exacto en euros
+
+- **WHEN** la venta es de 8.500 Bs y el cajero cobra los 8,47 € propuestos
+- **THEN** la línea vale 8.500 Bs, no queda restante y se puede validar
+
+#### Scenario: Pago de más en euros
+
+- **WHEN** la venta es de 8.500 Bs y el cajero teclea 10 €
+- **THEN** la línea vale los 10 € convertidos y el vuelto sale en Bs
+
+#### Scenario: Excedente sobre lo adeudado redondeado
+
+- **WHEN** la venta es de 18.560 Bs con el € a 1.004,9565776200 Bs (se proponen 18,47 €) y el cajero teclea 25 €
+- **THEN** la línea vale 25.123,91 Bs y el vuelto 6.563,91 Bs, no 25.122,37 y 6.562,37 (excedente medido contra 18,47 €)
+
+#### Scenario: Reembolso con excedente
+
+- **WHEN** un reembolso de una venta cobrada a 1.000 Bs/€ debe 8 € y el cajero teclea 10 €
+- **THEN** la línea vale -10.000 Bs, a la tasa original
+
+#### Scenario: Pago parcial en euros
+
+- **WHEN** la venta es de 17.000 Bs y el cajero teclea 5 €
+- **THEN** la línea vale la conversión de 5 € y el restante sigue en Bs, en USD y en euros
+
+#### Scenario: Línea y recibo en la moneda de cobro
+
+- **WHEN** se agrega una línea del método en EUR
+- **THEN** la línea muestra "€ X / Bs Y" y el recibo muestra los euros junto al nombre del método
+
+#### Scenario: Recibo de un pago anterior a un cambio del método
+
+- **WHEN** después de cobrar en EUR se cambia o se quita la moneda de cobro del método y se reimprime el recibo
+- **THEN** el recibo muestra la moneda y el monto con que se cobró, guardados en el pago
+
+### Requirement: Cobro desde el backend en la moneda de cobro
+
+Un pago con un método con moneda de cobro registrado desde el backend (`pos.make.payment`) DEBE (MUST) quedar con la moneda del método y su monto en esa moneda, igual que uno sincronizado desde el PdV: a la tasa del día de la caja, o en un reembolso a la de los cobros originales. Sin tasa del día de esa moneda, el cobro desde el backend DEBE (MUST) rechazarse con el aviso del PdV.
+
+#### Scenario: Cobro de una orden desde el backend
+
+- **WHEN** se cobra desde el backend una orden de 100.387,65 Bs con el método en EUR, a 1.003,8765 Bs/€
+- **THEN** el pago queda con moneda EUR y 100 €, y su cajón y su cruce los cuentan
+
+#### Scenario: Reembolso desde el backend
+
+- **WHEN** la venta se cobró con 80 € y se reembolsa entera desde el backend con el método en EUR
+- **THEN** el pago del reembolso queda en −80 €, aunque la tasa del día sea otra
+
+#### Scenario: Cobro desde el backend sin tasa del día
+
+- **WHEN** el EUR no tiene tasa del día y se cobra desde el backend una orden con el método en EUR
+- **THEN** se rechaza con el mismo aviso del PdV y la orden sigue sin pagos; los demás métodos se cobran igual
+
+#### Scenario: Orden sincronizada sin tasa del día
+
+- **WHEN** llega al servidor una orden de un PdV con un bundle anterior, pagada en EUR sin `tender_amount` y sin tasa del día del EUR
+- **THEN** se sincroniza igual, con 0 € en el pago y un aviso en el log del servidor
+
+### Requirement: Reembolso a la tasa con la que se cobró la moneda de cobro
+
+El reembolso de una orden pagada en una moneda de cobro DEBE (MUST) convertir esa moneda con la tasa con la que se cobraron en ella los pagos de las órdenes originales de todas sus líneas (`get_refund_tender_rates`), no con la del día, en el PdV y en el backend.
+
+#### Scenario: Reembolso desde el backend de una venta de otro día
+
+- **WHEN** una venta se cobró con 24,29 € a 1.399,75 Bs/€ y hoy el € vale 1.003,8765 Bs, y su reembolso se paga desde el backend con el método en EUR
+- **THEN** el pago del reembolso queda en −24,29 € y no en −33,87 €
+
+#### Scenario: Reembolso de un pago en euros
+
+- **WHEN** la venta original se cobró a 1.000 Bs/€ y hoy el € vale 1.003,8765 Bs
+- **THEN** reembolsar 8.000 Bs con el método en EUR devuelve 8 €
+
+#### Scenario: Reembolso con líneas de dos ventas
+
+- **WHEN** un reembolso armado fuera del PdV (`sync_from_ui` del core rechaza uno de varias órdenes) tiene líneas de dos ventas cobradas con 80 € y con 50 € a tasas distintas, y se paga entero desde el backend con el método en EUR
+- **THEN** devuelve 130 €, a la tasa de las dos ventas, y no 120 € a la de la primera
+
+### Requirement: El cruce de la moneda de cobro lleva lo cobrado en esa moneda
+
+Un método con moneda de cobro y sus dos diarios de cruce DEBE (MUST) cruzar como un método en divisa, y la línea del diario real DEBE (MUST) llevar como `amount_currency` lo cobrado en esa moneda (`tender_amount`), con el debe/haber en la moneda de la compañía y los montos alternos de los pagos. Sin `currency_amount`, DEBE (MUST) convertir el debe/haber, que está en la moneda de la compañía, a la tasa del día de la caja.
+
+#### Scenario: Venta en efectivo en euros
+
+- **WHEN** se cierra una sesión con una venta de 116 USD pagada con 100 € en el efectivo en EUR
+- **THEN** el cruce lleva 116 en la transitoria del método y en la de la caja en EUR, con `amount_currency` de 100 € en esta última
+
+#### Scenario: Método sin moneda de cobro
+
+- **WHEN** se cruza un método en la alterna
+- **THEN** su cruce no cambia y no recibe el argumento nuevo
+
+#### Scenario: Llamador sin el monto en la moneda de cobro
+
+- **WHEN** un módulo crea el cruce de un método con moneda de cobro sin pasar `currency_amount`
+- **THEN** la línea del diario real lleva la conversión del debe/haber desde la moneda de la compañía a la tasa del día de la caja, no el debe/haber como si fuera esa moneda
+
+### Requirement: El efectivo de la caja es el de su moneda
+
+La apertura de una sesión DEBE (MUST) rechazarse si el primer método de efectivo de la caja tiene moneda de cobro: en ese método el core registra el vuelto y el arqueo.
+
+#### Scenario: Efectivo en euros primero en la lista
+
+- **WHEN** el método en EUR es el primer método de efectivo de la caja
+- **THEN** no se puede abrir la sesión y el mensaje pide moverlo después del efectivo de la caja
+
+### Requirement: La línea transitoria del cruce en la moneda del diario del método
+
+Si el llamador pasa `transitory_amount_currency` y el diario del método tiene moneda, la línea transitoria del cruce DEBE (MUST) ir en esa moneda y con ese monto, con el signo de su debe/haber, para que la transitoria quede en cero también en ella. Sin él, la línea DEBE (MUST) seguir en la moneda de la compañía. En el cruce combinado, cada pata DEBE (MUST) llevar el suyo y el neto en esa moneda cuenta para no crear el asiento.
+
+#### Scenario: Diario transitorio en la alterna
+
+- **WHEN** se cruzan 100 € (116 de la caja) de un método cuyo diario está en la alterna, pasando `transitory_amount_currency` = 116
+- **THEN** la línea transitoria va en la alterna con `amount_currency` 116 y la del diario real con 100 €, las dos con el mismo debe/haber en la moneda de la compañía
+
+#### Scenario: Sin el monto en la moneda del diario
+
+- **WHEN** se cruza el mismo método sin `transitory_amount_currency`
+- **THEN** la línea transitoria va en la moneda de la compañía, como siempre
+
+#### Scenario: Cruce combinado con venta y reembolso
+
+- **WHEN** el cruce combinado de ese método tiene una venta (116) y un reembolso (−58) en la moneda del diario
+- **THEN** cada pata lleva su línea transitoria en esa moneda con su monto

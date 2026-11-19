@@ -5,7 +5,8 @@ from collections import defaultdict, deque
 from threading import Lock
 
 from odoo import _, http
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
+from odoo.fields import Domain
 
 from odoo.addons.pos_self_order.controllers.orders import PosSelfOrderController
 
@@ -15,9 +16,11 @@ _logger = logging.getLogger(__name__)
 # Las rutas ``identify``/``identify_create``/``set_phone`` corren con
 # ``sudo()`` a propósito: el Kiosko puede abrirse con un usuario deliberadamente
 # capado (que solo ve el Kiosko) y aun así debe poder buscar/registrar al
-# cliente. Como no hay record rules que frenen una enumeración de cédulas
-# (``res.partner`` no está scopeado por compañía en este código), el freno es
-# un rate-limit por ``access_token`` (el token del dispositivo, uno por caja).
+# cliente. Como el ``sudo()`` salta las record rules, nada frena una
+# enumeración de cédulas entre los clientes de la empresa de la caja (la
+# búsqueda solo se limita a las compañías cuyos clientes puede facturar), así
+# que el freno es un rate-limit por ``access_token`` (el token del dispositivo,
+# uno por caja).
 #
 # El límite está calibrado para NO tocar el uso real: una fila de clientes,
 # cada uno tecleando su cédula una o dos veces al finalizar la orden anterior,
@@ -184,22 +187,57 @@ class L10nVePosSelfOrderController(PosSelfOrderController):
     Kiosk knows whether to ask the customer to complete a missing phone
     (``set_phone``, fill-only — never overwrites an existing one). All three
     routes are rate-limited per ``access_token`` (see module top).
+
+    The partner ``id`` goes back signed (``"<id>-<hmac>"``), the only form the
+    core Kiosk accepts as the order's ``partner_id`` (see
+    ``_ve_partner_payload``).
     """
+
+    def _ve_partner_payload(self, pos_config, partner):
+        """Datos del partner que las tres rutas devuelven al Kiosko, con el
+        ``id`` firmado.
+
+        En Odoo 19 el core del Kiosko solo acepta como ``partner_id`` de la
+        orden un id firmado (``pos.order._get_signed_self_partner_id``):
+        ``_check_pos_order`` lo valida con ``_get_self_partner_from_token`` y
+        descarta cualquier otro valor. Con el id numérico, ``process-order``
+        guardaba la orden sin cliente y el Kiosko pisaba su orden local con esa
+        respuesta, así que la factura y Megasoft se quedaban sin cédula. Se
+        firma igual que ``/pos-self-order/validate-partner`` del core.
+        """
+        payload = partner.read(["id", "name", "vat", "prefix_vat"], load=False)
+        for record in payload:
+            record["id"] = pos_config.env["pos.order"]._get_signed_self_partner_id(
+                pos_config, record["id"]
+            )
+        return payload
 
     def _ve_find_partner(self, pos_config, prefix_vat, vat):
         """Búsqueda determinista del partner por cédula/RIF (compartida por las
         tres rutas). ``sudo()`` a propósito (ver docstring de la clase). El
         ``order`` desempata duplicados de forma estable: primero compañías
         (``is_company``), luego el ``id`` más bajo.
+
+        Solo toma contactos que la factura de la caja puede usar: los de su
+        compañía, los de sus compañías padre (una sucursal factura a los
+        clientes de su matriz) y los compartidos. Es la misma regla con la que
+        ``account.move`` valida el cliente (``_check_company_domain``).
+        ``l10n_ve_contact`` le pone compañía a cada contacto, así que en una base
+        con varias empresas la misma cédula puede existir en otra; tomar ese
+        contacto dejaba la orden del Kiosko pagada y sin factura ("El cruce
+        entre empresas está prohibido"). Si la cédula solo existe en otra
+        empresa, el Kiosko la trata como un cliente nuevo.
         """
-        return (
-            pos_config.env["res.partner"]
-            .sudo()
-            .search(
-                [("prefix_vat", "=", prefix_vat), ("vat", "=", vat)],
-                order="is_company desc, id asc",
-                limit=1,
-            )
+        partner_model = pos_config.env["res.partner"].sudo()
+        return partner_model.search(
+            Domain.AND(
+                [
+                    partner_model._check_company_domain(pos_config.company_id),
+                    [("prefix_vat", "=", prefix_vat), ("vat", "=", vat)],
+                ]
+            ),
+            order="is_company desc, id asc",
+            limit=1,
         )
 
     @http.route(
@@ -212,15 +250,14 @@ class L10nVePosSelfOrderController(PosSelfOrderController):
         pos_config = self._verify_pos_config(access_token)
         if not _ve_within_rate_limit(access_token):
             return {"res.partner": [], "error": _("Too many attempts. Please wait a moment.")}
-        # Same match criterion as res.partner.check_duplicate_vat's domain
-        # (prefix_vat + vat), without a company_id filter — res.partner is not
-        # scoped by company in this codebase.
+        # Match by prefix_vat + vat among the partners this box can invoice
+        # (see _ve_find_partner).
         partner = self._ve_find_partner(pos_config, prefix_vat, vat)
         return {
             # NO ``phone`` here: the public route must not hand out phone
             # numbers to whoever probes cédulas. ``has_phone`` tells the Kiosk
             # whether to ask the customer to complete it.
-            "res.partner": partner.read(["id", "name", "vat", "prefix_vat"], load=False),
+            "res.partner": self._ve_partner_payload(pos_config, partner),
             "has_phone": bool(partner.phone),
             "error": False,
         }
@@ -276,7 +313,7 @@ class L10nVePosSelfOrderController(PosSelfOrderController):
             if not partner.phone:
                 partner.phone = phone
             return {
-                "res.partner": partner.read(["id", "name", "vat", "prefix_vat"], load=False),
+                "res.partner": self._ve_partner_payload(pos_config, partner),
                 "error": False,
             }
 
@@ -320,12 +357,27 @@ class L10nVePosSelfOrderController(PosSelfOrderController):
         if street:
             vals["street"] = street.strip()
 
-        # Create under the pos.config's company context (same env as the
-        # lookup) so res.partner's default company_id resolves to the box's
-        # company, mirroring how validate_partner creates with sudo().
-        partner = partner_model.create(vals)
+        # The new customer belongs to the box's ROOT company (the parent when
+        # the box is a branch), so every box of the company can invoice them,
+        # not only this Kiosk's branch; without branches the root is the box's
+        # company. ``with_company`` points env.company at that company so the
+        # per-company duplicate check of l10n_ve_contact looks there.
+        root_company = pos_config.company_id.root_id
+        vals["company_id"] = root_company.id
+        try:
+            with pos_config.env.cr.savepoint():
+                partner = partner_model.with_company(root_company).create(vals)
+        except ValidationError as error:
+            # E.g. l10n_ve_contact's GLOBAL duplicate check (the default when
+            # the per-company one is off): a cédula registered only in another
+            # company of the database cannot be created again here. Show the
+            # Kiosk the validation message instead of a server error.
+            _logger.info(
+                "Kiosk %s: the new customer was rejected: %s", pos_config.id, error
+            )
+            return {"res.partner": [], "error": str(error)}
         return {
-            "res.partner": partner.read(["id", "name", "vat", "prefix_vat"], load=False),
+            "res.partner": self._ve_partner_payload(pos_config, partner),
             "error": False,
         }
 
@@ -360,7 +412,7 @@ class L10nVePosSelfOrderController(PosSelfOrderController):
         if not partner.phone:
             partner.phone = phone
         return {
-            "res.partner": partner.read(["id", "name", "vat", "prefix_vat"], load=False),
+            "res.partner": self._ve_partner_payload(pos_config, partner),
             "error": False,
         }
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from odoo.tests import TransactionCase, tagged
 from odoo import Command, fields
-from .usd_rate import ensure_usd_rate
+from .rate_helper import seed_foreign_rate
 import logging
 
 _logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class TestRetentionFlows(TransactionCase):
             "currency_id": cls.currency.id,
             "foreign_currency_id": cls.foreign_currency.id,
         })
-        ensure_usd_rate(cls.env, cls.company)
+        seed_foreign_rate(cls.env)
         cls.partner = cls.env["res.partner"].search([("name", "=", "Test Partner")], limit=1) or             cls.env["res.partner"].create({"name": "Test Partner"})
         cls.product = cls.env["product.product"].search([("name", "=", "Test Service")], limit=1) or             cls.env["product.product"].create({"name": "Test Service", "type": "service"})
         cls.journal = cls.env["account.journal"].search(

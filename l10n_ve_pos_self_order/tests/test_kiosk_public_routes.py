@@ -16,8 +16,9 @@ Dos bloques:
   no-sobrescritura del número fiscal.
 """
 
+import uuid
 from contextlib import ExitStack, contextmanager
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 from odoo import Command
 from odoo.tests import TransactionCase, tagged
@@ -165,11 +166,11 @@ class TestKioskPublicRoutes(TransactionCase):
         )
         admin = cls.env.ref("base.user_admin")
 
-        def _make_config(name):
+        def _make_config(name, company=None):
             config = cls.env["pos.config"].create(
                 {
                     "name": name,
-                    "company_id": cls.company.id,
+                    "company_id": (company or cls.company).id,
                     "currency_id": vef.id,
                     "journal_id": sale_journal.id,
                     "invoice_journal_id": sale_journal.id,
@@ -190,6 +191,28 @@ class TestKioskPublicRoutes(TransactionCase):
 
         cls.config = _make_config("Kiosk Routes Config A")
         cls.other_config = _make_config("Kiosk Routes Config B")
+
+        # Ticket 16378: otra empresa de la misma base (sin relación con la de
+        # las cajas) y una sucursal de la empresa de las cajas con su propio
+        # Kiosko, como MONBODEGON y MONFARMACIA CCCT en Monfarmacia.
+        cls.other_company = cls.env["res.company"].create(
+            {
+                "name": "Kiosk Unrelated Co",
+                "currency_id": usd.id,
+                "country_id": cls.env.ref("base.ve").id,
+            }
+        )
+        cls.branch = cls.env["res.company"].create(
+            {
+                "name": "Kiosk Routes Branch",
+                "parent_id": cls.company.id,
+                "currency_id": usd.id,
+                "country_id": cls.env.ref("base.ve").id,
+                "foreign_currency_id": vef.id,
+            }
+        )
+        admin.company_ids |= cls.company | cls.branch | cls.other_company
+        cls.branch_config = _make_config("Kiosk Routes Branch Config", cls.branch)
 
     def setUp(self):
         super().setUp()
@@ -250,12 +273,23 @@ class TestKioskPublicRoutes(TransactionCase):
                 pass
             yield
 
-    def _call(self, controller, method_name, **kwargs):
-        with self._as_box(self.config):
+    def _call(self, controller, method_name, box=None, **kwargs):
+        with self._as_box(box or self.config):
             return getattr(controller(), method_name)(**kwargs)
 
     def _self_order(self, method_name, **kwargs):
         return self._call(L10nVePosSelfOrderController, method_name, **kwargs)
+
+    def _self_order_in(self, box, method_name, **kwargs):
+        """Llama la ruta como el Kiosko de ``box`` (otra caja que la de por
+        defecto), con su ``access_token``."""
+        return self._call(
+            L10nVePosSelfOrderController,
+            method_name,
+            box=box,
+            access_token=box.access_token,
+            **kwargs,
+        )
 
     def _mf(self, method_name, **kwargs):
         from odoo.addons.l10n_ve_pos_mf_self_order.controllers.main import (
@@ -264,9 +298,24 @@ class TestKioskPublicRoutes(TransactionCase):
 
         return self._call(L10nVePosMfSelfOrderController, method_name, **kwargs)
 
-    def _make_partner(self, prefix_vat, vat, **vals):
-        return self.env["res.partner"].create(
-            {"name": f"Cliente {vat}", "prefix_vat": prefix_vat, "vat": vat, **vals}
+    def _make_partner(self, prefix_vat, vat, company=None, **vals):
+        """Cliente de ``company`` (por defecto, la empresa de las cajas): el
+        Kiosko solo encuentra los contactos que su caja puede facturar
+        (ticket 16378). ``with_company`` alinea ``env.company`` para el control
+        de cédula duplicada de ``l10n_ve_contact``."""
+        company = company or self.company
+        return (
+            self.env["res.partner"]
+            .with_company(company)
+            .create(
+                {
+                    "name": f"Cliente {vat}",
+                    "prefix_vat": prefix_vat,
+                    "vat": vat,
+                    "company_id": company.id,
+                    **vals,
+                }
+            )
         )
 
     def _make_paid_order(self, config, **vals):
@@ -295,6 +344,15 @@ class TestKioskPublicRoutes(TransactionCase):
                 **vals,
             }
         )
+
+    def _partner_from_result(self, result, box=None):
+        """Partner de la respuesta de identificación. El ``id`` viene firmado
+        (``"<id>-<hmac>"``), así que se resuelve igual que lo hace el core al
+        recibir la orden; un id sin firmar da un recordset vacío."""
+        signed_id = result["res.partner"][0]["id"]
+        return self.env["pos.order"]._get_self_partner_from_token(
+            box or self.config, signed_id
+        ) or self.env["res.partner"]
 
     # -- identify ------------------------------------------------------------
 
@@ -434,7 +492,7 @@ class TestKioskPublicRoutes(TransactionCase):
             name="Cliente Nuevo",
             phone="0414-1234567",
         )
-        partner = self.env["res.partner"].browse(result["res.partner"][0]["id"])
+        partner = self._partner_from_result(result)
         self.assertEqual(partner.phone, "0414-1234567")
 
     # -- identify_create: dirección ------------------------------------------
@@ -490,7 +548,7 @@ class TestKioskPublicRoutes(TransactionCase):
         finally:
             self.config.self_ordering_require_address = False
         self.assertFalse(result["error"])
-        partner = self.env["res.partner"].browse(result["res.partner"][0]["id"])
+        partner = self._partner_from_result(result)
         self.assertEqual(partner.state_id, state)
         self.assertEqual(partner.municipality, municipality)
         self.assertEqual(partner.street, "Av. Siempre Viva")
@@ -615,7 +673,7 @@ class TestKioskPublicRoutes(TransactionCase):
             municipality_id=municipality.id,
         )
         self.assertFalse(result["error"])
-        partner = self.env["res.partner"].browse(result["res.partner"][0]["id"])
+        partner = self._partner_from_result(result)
         self.assertEqual(partner.state_id, state)
         self.assertEqual(partner.municipality, municipality)
 
@@ -678,7 +736,7 @@ class TestKioskPublicRoutes(TransactionCase):
             street="Calle 1",
         )
         self.assertFalse(result["error"])
-        partner = self.env["res.partner"].browse(result["res.partner"][0]["id"])
+        partner = self._partner_from_result(result)
         self.assertEqual(partner.state_id, state_b)
         self.assertEqual(partner.municipality, municipality_b)
         self.assertFalse(partner.city_id)
@@ -698,7 +756,7 @@ class TestKioskPublicRoutes(TransactionCase):
             state_id=state_b.id,
         )
         self.assertFalse(result["error"])
-        partner = self.env["res.partner"].browse(result["res.partner"][0]["id"])
+        partner = self._partner_from_result(result)
         self.assertEqual(partner.state_id, state_b)
         self.assertFalse(partner.municipality)
         self.assertFalse(partner.city_id)
@@ -715,7 +773,7 @@ class TestKioskPublicRoutes(TransactionCase):
             phone="0412-9990011",
         )
         self.assertFalse(result["error"])
-        partner = self.env["res.partner"].browse(result["res.partner"][0]["id"])
+        partner = self._partner_from_result(result)
         company_partner = self.company.partner_id
         self.assertEqual(partner.state_id, company_partner.state_id)
         self.assertEqual(partner.municipality, company_partner.municipality)
@@ -774,6 +832,102 @@ class TestKioskPublicRoutes(TransactionCase):
         )
         self.assertTrue(result["error"])
         self.assertFalse(p_empty.phone)
+
+    # -- id firmado del partner (ticket 16110) -------------------------------
+
+    def test_identify_returns_signed_partner_id(self):
+        """``identify`` devuelve el id firmado, que el core resuelve al partner."""
+        partner = self._make_partner("V", "12121212", phone="0412-1212121")
+        result = self._self_order(
+            "l10n_ve_kiosk_identify",
+            access_token=self.config.access_token,
+            prefix_vat="V",
+            vat="12121212",
+        )
+        signed_id = result["res.partner"][0]["id"]
+        self.assertIsInstance(signed_id, str)
+        self.assertEqual(self._partner_from_result(result), partner)
+
+    def test_identify_create_returns_signed_partner_id(self):
+        """Creación nueva y dedup devuelven el id firmado."""
+        result = self._self_order(
+            "l10n_ve_kiosk_identify_create",
+            access_token=self.config.access_token,
+            prefix_vat="V",
+            vat="13131313",
+            name="Cliente Nuevo",
+            phone="0412-1313131",
+        )
+        created = self._partner_from_result(result)
+        self.assertEqual(created.vat, "13131313")
+
+        result = self._self_order(
+            "l10n_ve_kiosk_identify_create",
+            access_token=self.config.access_token,
+            prefix_vat="V",
+            vat="13131313",
+            name="Otro Nombre",
+            phone="0412-1313132",
+        )
+        self.assertEqual(self._partner_from_result(result), created)
+
+    def test_set_phone_returns_signed_partner_id(self):
+        partner = self._make_partner("V", "14141414")
+        result = self._self_order(
+            "l10n_ve_kiosk_identify_set_phone",
+            access_token=self.config.access_token,
+            prefix_vat="V",
+            vat="14141414",
+            phone="0412-1414141",
+        )
+        self.assertEqual(self._partner_from_result(result), partner)
+
+    def test_kiosk_order_keeps_identified_partner(self):
+        """La orden que el Kiosko manda a ``process-order`` con el partner que
+        devolvió ``identify`` se guarda con ese ``partner_id``, y la respuesta
+        devuelve el mismo id, así que el Kiosko no pierde el cliente al conectar
+        la respuesta. Con el id numérico el core lo descartaba y la orden
+        quedaba sin cliente."""
+        partner = self._make_partner("V", "15151515", phone="0412-1515151")
+        result = self._self_order(
+            "l10n_ve_kiosk_identify",
+            access_token=self.config.access_token,
+            prefix_vat="V",
+            vat="15151515",
+        )
+        signed_id = result["res.partner"][0]["id"]
+        payload = {
+            "uuid": str(uuid.uuid4()),
+            "partner_id": signed_id,
+            "lines": [],
+            "amount_total": 0.0,
+            "amount_tax": 0.0,
+            "amount_paid": 0.0,
+            "amount_return": 0.0,
+        }
+        PosOrder = self.env["pos.order"]
+        # Mismos pasos que PosSelfOrderController.process_order.
+        vals = PosOrder._check_pos_order(self.config, payload, "kiosk")
+        self.assertEqual(vals["partner_id"], partner.id)
+        synced = (
+            PosOrder.sudo()
+            .with_company(self.company.id)
+            .sync_from_ui([vals])
+        )
+        order = PosOrder.browse(synced["pos.order"][0]["id"])
+        self.assertEqual(order.partner_id, partner)
+        # ``_generate_return_values`` lee ``self.env`` del request.
+        with patch.object(
+            PosSelfOrderController, "env", new_callable=PropertyMock, return_value=self.env
+        ):
+            response = PosSelfOrderController()._generate_return_values(order, self.config)
+        self.assertEqual(response["pos.order"][0]["partner_id"], signed_id)
+
+        # Contrato del core que motivó el fix: el id sin firmar se descarta.
+        vals = PosOrder._check_pos_order(
+            self.config, dict(payload, uuid=str(uuid.uuid4()), partner_id=partner.id), "kiosk"
+        )
+        self.assertFalse(vals["partner_id"])
 
     # -- session_orders ------------------------------------------------------
 
@@ -848,6 +1002,127 @@ class TestKioskPublicRoutes(TransactionCase):
             fiscal_machine="TFHKA",
         )
         self.assertFalse(result["success"])
+
+    # -- compañía del cliente (ticket 16378) ---------------------------------
+
+    def _vat_check_by_company(self, *companies):
+        """Control de cédula duplicada de ``l10n_ve_contact`` POR compañía (como
+        en Monfarmacia): permite la misma cédula en dos empresas."""
+        for company in companies:
+            company.validate_user_creation_by_company = True
+
+    def test_identify_ignores_partner_of_other_company(self):
+        """Un contacto de otra empresa no se devuelve: su factura en la caja
+        fallaría ("El cruce entre empresas está prohibido")."""
+        self._make_partner("V", "16378001", self.other_company, phone="0412-1637801")
+        result = self._self_order(
+            "l10n_ve_kiosk_identify",
+            access_token=self.config.access_token,
+            prefix_vat="V",
+            vat="16378001",
+        )
+        self.assertEqual(result["res.partner"], [])
+        self.assertFalse(result["has_phone"])
+
+    def test_identify_prefers_partner_the_box_can_invoice(self):
+        """Con la misma cédula en dos empresas, devuelve el contacto de la
+        empresa de la caja aunque el de la otra tenga el ``id`` más bajo."""
+        self._vat_check_by_company(self.company, self.other_company)
+        foreign = self._make_partner("V", "16378002", self.other_company)
+        own = self._make_partner("V", "16378002")
+        self.assertLess(foreign.id, own.id)
+        result = self._self_order(
+            "l10n_ve_kiosk_identify",
+            access_token=self.config.access_token,
+            prefix_vat="V",
+            vat="16378002",
+        )
+        self.assertEqual(self._partner_from_result(result), own)
+
+    def test_identify_from_branch_finds_parent_company_partner(self):
+        """El Kiosko de una sucursal encuentra a los clientes de su matriz,
+        que su factura acepta."""
+        parent_partner = self._make_partner("V", "16378003", phone="0412-1637803")
+        result = self._self_order_in(
+            self.branch_config,
+            "l10n_ve_kiosk_identify",
+            prefix_vat="V",
+            vat="16378003",
+        )
+        found = self._partner_from_result(result, self.branch_config)
+        self.assertEqual(found, parent_partner)
+        self.assertTrue(result["has_phone"])
+
+    def test_identify_create_from_branch_creates_in_root_company(self):
+        """Cédula registrada solo en otra empresa: el Kiosko de la sucursal crea
+        un contacto nuevo en la empresa raíz y no toca el de la otra empresa."""
+        self._vat_check_by_company(self.company, self.branch, self.other_company)
+        foreign = self._make_partner(
+            "V", "16378004", self.other_company, phone="0412-1637804"
+        )
+        result = self._self_order_in(
+            self.branch_config,
+            "l10n_ve_kiosk_identify_create",
+            prefix_vat="V",
+            vat="16378004",
+            name="Cliente Sucursal",
+            phone="0414-1637804",
+        )
+        self.assertFalse(result["error"])
+        created = self._partner_from_result(result, self.branch_config)
+        self.assertTrue(created)
+        self.assertNotEqual(created, foreign)
+        self.assertEqual(created.company_id, self.company)
+        self.assertEqual(created.phone, "0414-1637804")
+        self.assertEqual(foreign.phone, "0412-1637804", "no toca el de la otra empresa")
+        # La regla de compañía de la factura de la sucursal acepta al nuevo.
+        self.assertTrue(
+            created.filtered_domain(
+                self.env["res.partner"]._check_company_domain(self.branch)
+            )
+        )
+        # Una segunda identificación en el Kiosko ya lo encuentra.
+        again = self._self_order_in(
+            self.branch_config, "l10n_ve_kiosk_identify", prefix_vat="V", vat="16378004"
+        )
+        self.assertEqual(self._partner_from_result(again, self.branch_config), created)
+
+    def test_identify_create_global_vat_check_returns_error(self):
+        """Con el control de cédula GLOBAL de ``l10n_ve_contact`` (por defecto),
+        una cédula de otra empresa no se puede registrar de nuevo: la ruta
+        responde con el error de la validación en vez de reventar."""
+        self._make_partner("V", "16378005", self.other_company)
+        result = self._self_order(
+            "l10n_ve_kiosk_identify_create",
+            access_token=self.config.access_token,
+            prefix_vat="V",
+            vat="16378005",
+            name="Cliente Duplicado",
+            phone="0412-1637805",
+        )
+        self.assertEqual(result["res.partner"], [])
+        self.assertTrue(result["error"])
+        self.assertEqual(
+            self.env["res.partner"].search_count(
+                [("prefix_vat", "=", "V"), ("vat", "=", "16378005")]
+            ),
+            1,
+        )
+
+    def test_set_phone_ignores_partner_of_other_company(self):
+        """``set_phone`` no completa el teléfono de un contacto de otra
+        empresa."""
+        foreign = self._make_partner("V", "16378006", self.other_company)
+        result = self._self_order(
+            "l10n_ve_kiosk_identify_set_phone",
+            access_token=self.config.access_token,
+            prefix_vat="V",
+            vat="16378006",
+            phone="0412-1637806",
+        )
+        self.assertEqual(result["res.partner"], [])
+        self.assertTrue(result["error"])
+        self.assertFalse(foreign.phone)
 
 
 @tagged("post_install", "-at_install", "l10n_ve_pos_self_order")

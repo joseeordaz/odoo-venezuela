@@ -24,6 +24,14 @@ class PosConfig(models.Model):
         default=0.0,
         readonly=False,
     )
+    tender_currency_rates = fields.Json(
+        compute="_compute_tender_currency_rates",
+        help="Rates of the day of the tender currencies of the payment methods of the PoS against "
+        "the company currency, by currency id: foreign_rate (tender currency → company currency) "
+        "and foreign_inverse_rate (company currency → tender currency), same pair as "
+        "foreign_rate / foreign_inverse_rate. In a PoS in another currency they only tell whether "
+        "the currency has a rate of the day.",
+    )
     pos_show_free_qty = fields.Boolean(related="company_id.pos_show_free_qty")
     sell_kit_from_another_store = fields.Boolean(default=False)
     pos_show_just_products_with_available_qty = fields.Boolean(
@@ -35,6 +43,11 @@ class PosConfig(models.Model):
         help="Activate product entry with barcode in strict mode"
     )
     validate_phone_in_pos = fields.Boolean(default=False)
+    allow_product_creation_in_pos = fields.Boolean(
+        "Allow product creation",
+        default=False,
+        help="Allow creating products from the PoS screen",
+    )
 
     @api.depends("foreign_currency_id", "foreign_inverse_rate", "foreign_rate")
     def _compute_rate(self):
@@ -47,10 +60,84 @@ class PosConfig(models.Model):
             # este compute no debe bloquear la vista de la configuración.
             rate_values = rate.compute_rate(
                 config.foreign_currency_id.id,
-                fields.Date.today(),
+                fields.Date.context_today(config),
                 raise_if_not_found=False,
             )
             config.update(rate_values)
+
+    @api.constrains("payment_method_ids", "journal_id", "currency_id")
+    def _check_tender_currency_methods_currency(self):
+        """Los métodos con moneda de cobro (``pos.payment.method.tender_currency_id``)
+        de cada caja tienen que poder usarse en ella
+        (``_get_tender_currency_error``). Ver también
+        ``pos.payment.method._check_tender_currency``.
+        """
+        for config in self:
+            config._check_tender_currency_methods()
+
+    def _check_tender_currency_methods(self, methods=None):
+        """``ValidationError`` si alguno de los métodos con moneda de cobro de
+        la caja (o de ``methods``) no puede usarse en ella."""
+        self.ensure_one()
+        if methods is None:
+            methods = self.payment_method_ids
+        for method in methods.filtered("tender_currency_id"):
+            error = self._get_tender_currency_error(method)
+            if error:
+                raise ValidationError(error)
+
+    def _get_tender_currency_error(self, method):
+        """Mensaje de error si ``method`` (con moneda de cobro) no puede usarse
+        en esta caja, o ``None``.
+
+        Aquí solo en una caja en la moneda de la compañía: las tasas de la
+        moneda de cobro (``tender_currency_rates``) son contra esa moneda, y en
+        una caja en otra moneda se aplicarían a montos en la moneda de la caja.
+        ``binaural_pos_multicurrency`` extiende este gancho para esas cajas,
+        donde convierte con la tasa nativa de Odoo. En una caja en la moneda de
+        la compañía la alterna no es moneda de cobro: tiene su propio flujo
+        (``is_foreign_currency``).
+        """
+        self.ensure_one()
+        if self.currency_id != self.company_id.currency_id:
+            return method._tender_currency_in_foreign_pos_message()
+        if method.tender_currency_id == self.company_id.foreign_currency_id:
+            return method._tender_currency_not_third_message()
+        return None
+
+    @api.depends("payment_method_ids.tender_currency_id")
+    def _compute_tender_currency_rates(self):
+        """Tasas de las monedas de cobro (``pos.payment.method.tender_currency_id``)
+        con la misma fuente y la misma orientación que ``_compute_rate``:
+        ``compute_rate`` a la fecha del usuario, ``foreign_rate`` = moneda de
+        cobro → caja (la GRANDE, Bs por €) y ``foreign_inverse_rate`` = caja →
+        moneda de cobro (la CHICA). Viven en la caja porque ``pos.config`` se
+        carga entero en cada apertura (``pos.load.mixin._last_server_date_to_load``
+        no lo filtra por ``write_date``): el PdV recibe siempre la tasa del día.
+        Sin tasa del día, ambas valen 0 y la conversión no es posible.
+
+        Las tasas son contra la moneda de la COMPAÑÍA de la caja
+        (``compute_rate`` busca las de ``env.company``, de ahí el
+        ``with_company``). En una caja en la moneda de la compañía son
+        "moneda de cobro → caja" y convierten (``_get_tender_conversion_rate``).
+        En una caja en otra moneda (``binaural_pos_multicurrency``) la
+        conversión es la nativa de Odoo y estas tasas solo dicen si la moneda
+        tiene tasa del día (``_has_tender_rate_of_the_day``).
+        """
+        for config in self:
+            rate = self.env["res.currency.rate"].with_company(config.company_id)
+            rates = {}
+            for currency in config.payment_method_ids.tender_currency_id:
+                values = rate.compute_rate(
+                    currency.id,
+                    fields.Date.context_today(config),
+                    raise_if_not_found=False,
+                )
+                rates[str(currency.id)] = {
+                    "foreign_rate": values.get("foreign_rate") or 0.0,
+                    "foreign_inverse_rate": values.get("foreign_inverse_rate") or 0.0,
+                }
+            config.tender_currency_rates = rates
 
     # ---------------------------------------------------------------
     # POS-scoped currency conversion
@@ -119,8 +206,18 @@ class PosConfig(models.Model):
         Nunca redondear la tasa; redondear solo el resultado con
         ``to_currency.round()``.
 
-        Returns 0.0 when neither side is the foreign currency; callers must
-        treat 0.0 as "no conversion possible" and NOT silently proceed.
+        TERCERA MONEDA (moneda de cobro de un método, p. ej. EUR): sus tasas
+        viven en ``tender_currency_rates`` con la misma orientación, así que
+        EUR → Bs multiplica por su ``foreign_rate`` (GRANDE) y Bs → EUR por su
+        ``foreign_inverse_rate`` (CHICO). Entre la moneda de cobro y la alterna
+        (EUR → USD) se pasa por la caja multiplicando las dos tasas, sin
+        redondear ninguna: EUR → Bs × Bs → USD. Ver ``_get_tender_conversion_rate``.
+        Los pares sin moneda de cobro siguen la regla de siempre (el lado que
+        no es la alterna es la caja).
+
+        Returns 0.0 when neither side is the foreign currency nor a tender
+        currency, or the rate of the day is missing; callers must treat 0.0 as
+        "no conversion possible" and NOT silently proceed.
 
         KEEP IN SYNC WITH:
           static/src/overrides/models/pos_order.js :: _getPosConversionRate
@@ -128,6 +225,9 @@ class PosConfig(models.Model):
         self.ensure_one()
         if from_currency == to_currency:
             return 1.0
+        tender_currencies = self._get_tender_currencies()
+        if from_currency in tender_currencies or to_currency in tender_currencies:
+            return self._get_tender_conversion_rate(from_currency, to_currency)
         foreign = self.foreign_currency_id
         if not foreign:
             return 0.0
@@ -140,6 +240,50 @@ class PosConfig(models.Model):
             rate = self.foreign_rate
             return rate if rate else 0.0
         return 0.0
+
+    def _get_tender_currencies(self):
+        """Monedas de cobro con tasa en esta caja (``tender_currency_rates``)."""
+        self.ensure_one()
+        return self.env["res.currency"].browse(
+            [int(currency_id) for currency_id in (self.tender_currency_rates or {})]
+        )
+
+    def _get_tender_conversion_rate(self, from_currency, to_currency):
+        """Tasa entre una moneda de cobro y la caja, la alterna u otra moneda
+        de cobro: cada lado aporta su par ``(moneda → caja, caja → moneda)``
+        (``_get_pos_currency_rate_pair``) y la tasa es
+        ``(from → caja) × (caja → to)``, sin redondear. 0.0 si algún lado no
+        tiene tasa.
+
+        KEEP IN SYNC WITH:
+          static/src/overrides/models/pos_order.js :: _getTenderConversionRate
+        """
+        self.ensure_one()
+        from_rates = self._get_pos_currency_rate_pair(from_currency)
+        to_rates = self._get_pos_currency_rate_pair(to_currency)
+        if not from_rates or not to_rates:
+            return 0.0
+        return (from_rates[0] * to_rates[1]) or 0.0
+
+    def _get_pos_currency_rate_pair(self, currency):
+        """``(currency → caja, caja → currency)`` con las tasas operativas de
+        esta caja para la caja (1, 1), la alterna y las monedas de cobro, o
+        ``None`` para otra moneda.
+
+        KEEP IN SYNC WITH:
+          static/src/overrides/models/pos_order.js :: _getPosCurrencyRatePair
+        """
+        self.ensure_one()
+        if not currency:
+            return None
+        if currency == self.currency_id:
+            return 1.0, 1.0
+        if currency == self.foreign_currency_id:
+            return self.foreign_rate or 0.0, self.foreign_inverse_rate or 0.0
+        rates = (self.tender_currency_rates or {}).get(str(currency.id))
+        if rates:
+            return rates.get("foreign_rate") or 0.0, rates.get("foreign_inverse_rate") or 0.0
+        return None
 
     def _convert(self, from_amount, from_currency, to_currency, round=True):  # noqa: A002
         """POS-scoped currency conversion. See MIRROR CONTRACT above.
@@ -192,7 +336,30 @@ class PosConfig(models.Model):
     def _check_before_creating_new_session(self):
         res = super()._check_before_creating_new_session()
         self._check_cross_move_accounts()
+        self._check_tender_cash_methods_order()
         return res
+
+    def _check_tender_cash_methods_order(self):
+        """El core toma como efectivo de la caja el primer método de efectivo:
+        en él registra el vuelto (``pos.order._process_payment_lines``) y su
+        diario es el del arqueo (``pos.session.cash_journal_id``). Un método en
+        una tercera moneda no puede ser ese: el vuelto se entrega en la moneda
+        de la caja.
+        """
+        self.ensure_one()
+        first_cash_method = self.payment_method_ids.filtered("is_cash_count")[:1]
+        if first_cash_method.tender_currency_id:
+            raise ValidationError(
+                _(
+                    "The first cash payment method of the Point of Sale %(pos)s must be the one in "
+                    "%(currency)s: the change is given with it. %(method)s is collected in "
+                    "%(tender)s, move it after that one in the payment methods list.",
+                    pos=self.name,
+                    currency=self.currency_id.name,
+                    method=first_cash_method.name,
+                    tender=first_cash_method.tender_currency_id.name,
+                )
+            )
 
     def _check_cross_move_accounts(self):
         """Refuse to open a session whose cross moves would miss an account.
@@ -235,3 +402,43 @@ class PosConfig(models.Model):
                 _("The session must have a foreign currency or active")
             )
         return res
+
+    def check_stock_availability(self, qty_by_product):
+        """Storable products whose quantity in the order exceeds the stock on
+        hand of the PoS source location (``amount_to_zero``).
+
+        Called by the PoS before the payment screen, so the order is blocked
+        before anything is printed on the fiscal machine. On hand, not free
+        quantity: what other confirmed orders reserved does not block, the
+        order being sold has priority.
+
+        :param dict qty_by_product: ``{product_id: quantity}`` of the order.
+        :return: list of ``{"name", "requested", "available"}``.
+        """
+        self.ensure_one()
+        if not self.amount_to_zero or not qty_by_product:
+            return []
+        qty_by_product = {int(product_id): qty for product_id, qty in qty_by_product.items()}
+        location = self.picking_type_id.default_location_src_id
+        if not location:
+            # Without a source location the quantity would be computed over
+            # every internal location of the company: do not validate.
+            return []
+        # exists(): a product deleted after the PoS loaded it is skipped
+        # instead of raising MissingError.
+        products = (
+            self.env["product.product"]
+            .browse(list(qty_by_product))
+            .exists()
+            .with_context(location=location.id)
+            .filtered("is_storable")
+        )
+        return [
+            {
+                "name": product.display_name,
+                "requested": qty_by_product[product.id],
+                "available": product.qty_available,
+            }
+            for product in products
+            if product.uom_id.compare(qty_by_product[product.id], product.qty_available) > 0
+        ]
