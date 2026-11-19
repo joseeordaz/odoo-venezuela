@@ -24,6 +24,9 @@ class MinimalPatchStackTest(unittest.TestCase):
             self.source("l10n_ve_accountant/__manifest__.py")
         )
         self.assertNotIn("account_reports", manifest["depends"])
+        # Upstream #16195 inherits the Enterprise revaluation wizard; Community has no such model.
+        for package in ("wizard", "tests"):
+            self.assertNotIn("multicurrency_revaluation", self.source(f"l10n_ve_accountant/{package}/__init__.py"))
 
     def test_donation_community_closure(self):
         manifest = ast.literal_eval(self.source("l10n_ve_donation/__manifest__.py"))
