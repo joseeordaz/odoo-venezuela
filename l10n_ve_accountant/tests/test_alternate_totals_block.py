@@ -141,10 +141,10 @@ class TestAlternateTotalsBlock(TransactionCase):
         self.assertFalse(arch.xpath("//page[@name='foreign_currency']"))
 
     def test_alternate_block_has_no_residual_amount(self):
-        """El unico monto adeudado es el nativo (`amount_residual`): el bloque alterno solo
-        muestra `tax_totals`, sin `amount_residual_company`, en ninguna moneda del documento."""
+        """Fork HOLA: el formulario conserva `amount_residual_company` (saldo en Bs de las
+        facturas en USD; hola_web_spanish lo usa) junto al monto adeudado nativo."""
         arch = etree.fromstring(self.env["account.move"].get_view(view_type="form")["arch"])
-        self.assertFalse(arch.xpath("//field[@name='amount_residual_company']"))
+        self.assertTrue(arch.xpath("//field[@name='amount_residual_company']"))
         self.assertTrue(arch.xpath("//field[@name='amount_residual']"))
 
     def test_company_without_reference_currency(self):

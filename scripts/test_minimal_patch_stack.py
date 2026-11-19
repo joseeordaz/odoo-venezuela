@@ -24,6 +24,8 @@ class MinimalPatchStackTest(unittest.TestCase):
             self.source("l10n_ve_accountant/__manifest__.py")
         )
         self.assertNotIn("account_reports", manifest["depends"])
+        # hola_web_spanish positions this field; upstream 3c13c4aa removed it.
+        self.assertIn('name="amount_residual_company"', self.source("l10n_ve_accountant/views/account_move.xml"))
         # Upstream #16195 inherits the Enterprise revaluation wizard; Community has no such model.
         for package in ("wizard", "tests"):
             self.assertNotIn("multicurrency_revaluation", self.source(f"l10n_ve_accountant/{package}/__init__.py"))
