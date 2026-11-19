@@ -1,4 +1,4 @@
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
 from odoo.tests import TransactionCase, tagged
 
 
@@ -182,7 +182,8 @@ class TestProductTemplateTaxesAndPrices(TransactionCase):
 
     def test_write_two_taxes_raises(self):
         template = self.env["product.template"].create({"name": "Two Taxes", "type": "consu"})
-        with self.assertRaises(ValidationError):
+        # l10n_ve_accountant rejects it first with its own UserError (ValidationError's parent).
+        with self.assertRaises(UserError):
             template.write(
                 {"taxes_id": [(6, 0, (self._tax("Tax A", 10) | self._tax("Tax B", 16)).ids)]}
             )
@@ -196,9 +197,9 @@ class TestProductTemplateTaxesAndPrices(TransactionCase):
         self.assertAlmostEqual(template.price_without_tax, 100, places=2)
 
     def test_prices_without_taxes(self):
-        template = self.env["product.template"].create(
-            {"name": "No Taxes", "type": "consu", "list_price": 50, "taxes_id": [(5, 0, 0)]}
-        )
+        # l10n_ve_accountant injects the company default tax on create; clear it as its own escape hatch allows.
+        template = self.env["product.template"].create({"name": "No Taxes", "type": "consu", "list_price": 50})
+        template.with_context(skip_tax_validation_on_write=True).write({"taxes_id": [(5, 0, 0)]})
         self.assertEqual(template.price_with_tax, 50)
         self.assertEqual(template.price_without_tax, 50)
 

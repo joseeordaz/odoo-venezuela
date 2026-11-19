@@ -19,6 +19,8 @@ class TestStockLocation(TransactionCase):
 @tagged("post_install", "-at_install", "l10n_ve_stock")
 class TestStockMoveLine(TransactionCase):
     def test_get_fields_stock_barcode_includes_priority(self):
+        if "stock_barcode" not in self.env.registry._init_modules:
+            self.skipTest("stock_barcode (Enterprise) is not installed")
         fields = self.env["stock.move.line"]._get_fields_stock_barcode()
         self.assertIn("priority_location", fields)
 
