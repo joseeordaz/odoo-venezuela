@@ -80,7 +80,8 @@ class MinimalPatchStackTest(unittest.TestCase):
     def test_sale_note_line_loop_fix_is_upstreamed(self):
         source = self.source("l10n_ve_sale/models/sale_order.py")
         self.assertIn("lambda line: not line.display_type", source)
-        self.assertIn("if remaining == invoiceable_lines:", source)
+        # Upstream b70fbbe9 rewrote the loop; the guard now stops when a batch consumes no lines.
+        self.assertIn("if remaining and remaining != pending[order]:", source)
 
     def test_invoice_book_defaults_accept_both_local_currencies(self):
         module = ast.parse(self.source("l10n_ve_invoice/wizard/accounting_reports.py"))
