@@ -24,6 +24,11 @@ class MinimalPatchStackTest(unittest.TestCase):
             self.source("l10n_ve_accountant/__manifest__.py")
         )
         self.assertNotIn("account_reports", manifest["depends"])
+        # hola_web_spanish positions this field; upstream 3c13c4aa removed it.
+        self.assertIn('name="amount_residual_company"', self.source("l10n_ve_accountant/views/account_move.xml"))
+        # Upstream #16195 inherits the Enterprise revaluation wizard; Community has no such model.
+        for package in ("wizard", "tests"):
+            self.assertNotIn("multicurrency_revaluation", self.source(f"l10n_ve_accountant/{package}/__init__.py"))
 
     def test_donation_community_closure(self):
         manifest = ast.literal_eval(self.source("l10n_ve_donation/__manifest__.py"))
@@ -80,7 +85,8 @@ class MinimalPatchStackTest(unittest.TestCase):
     def test_sale_note_line_loop_fix_is_upstreamed(self):
         source = self.source("l10n_ve_sale/models/sale_order.py")
         self.assertIn("lambda line: not line.display_type", source)
-        self.assertIn("if remaining == invoiceable_lines:", source)
+        # Upstream b70fbbe9 rewrote the loop; the guard now stops when a batch consumes no lines.
+        self.assertIn("if remaining and remaining != pending[order]:", source)
 
     def test_invoice_book_defaults_accept_both_local_currencies(self):
         module = ast.parse(self.source("l10n_ve_invoice/wizard/accounting_reports.py"))

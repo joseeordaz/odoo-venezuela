@@ -15,8 +15,11 @@ class ResCurrency(models.Model):
 
     def _compute_edit_rate(self):
         for record in self:
+            company = record.env.company
             record.edit_rate = (
-                record.env.company.currency_provider == "bcv"
+                # currency_provider comes from Enterprise currency_rate_live; absent in Community.
+                "currency_provider" in company._fields
+                and company.currency_provider == "bcv"
                 and record.env.user.has_group(
                     "l10n_ve_accountant.group_fiscal_config_support"
                 )

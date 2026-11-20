@@ -1,5 +1,6 @@
 from odoo import fields
 from odoo.tests import TransactionCase, tagged
+from .rate_helper import seed_base_rate
 
 
 @tagged("post_install", "-at_install", "l10n_ve_invoice")
@@ -11,6 +12,7 @@ class TestDebitNoteFiscalPeriodWarning(TransactionCase):
         self.currency_usd = self.env.ref("base.USD")
         self.company.currency_id = self.currency_vef
         self.company.foreign_currency_id = self.currency_usd
+        seed_base_rate(self.env)
 
         self.partner = self.env["res.partner"].create({"name": "Test DN Period Partner"})
 
